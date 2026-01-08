@@ -1,7 +1,6 @@
 #include <openssl/sha.h>
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +26,7 @@ struct FileMeta {
 struct Node {
   std::string name;
   NodeType type;
+  fs::path path;
   fs::file_time_type mtime;
 
   using Data = std::variant<FileMeta, std::vector<std::unique_ptr<Node>>>;
@@ -34,14 +34,19 @@ struct Node {
   Data data;
 
  private:
-  Node(std::string name, NodeType type, fs::file_time_type mtime, Data&& data)
+  Node(std::string name,
+       NodeType type,
+       fs::path path,
+       fs::file_time_type mtime,
+       Data&& data)
       : name(std::move(name)),
         type(type),
+        path(std::move(path)),
         mtime(mtime),
         data(std::move(data)) {}
 
  public:
-  static Node file(const fs::path& file_path) {
+  static Node file(fs::path file_path) {
     if (!fs::directory_entry(file_path).is_regular_file())
       throw std::invalid_argument("Path must point to a file.");
 
@@ -50,11 +55,12 @@ struct Node {
 
     return Node(file_path.filename().string(),
                 NodeType::File,
+                std::move(file_path),
                 fs::last_write_time(file_path),
                 Data{std::move(meta)});
   }
 
-  static Node directory(const fs::path& dir_path) {
+  static Node directory(fs::path dir_path) {
     std::vector<std::unique_ptr<Node>> children;
 
     if (!fs::directory_entry(dir_path).is_directory())
@@ -82,8 +88,34 @@ struct Node {
 
     return Node(dir_path.filename().string(),
                 NodeType::Directory,
+                std::move(dir_path),
                 fs::last_write_time(dir_path),
                 Data{std::move(children)});
+  }
+
+  void create_hash() {
+    if (type != NodeType::File)
+      return;
+
+    auto& file_meta = std::get<FileMeta>(data);
+    if (file_meta.file_hash.has_value())
+      return;
+
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+      throw std::runtime_error("Failed to open file.");
+
+    auto size = file.tellg();
+    std::string buffer(static_cast<size_t>(size), '\0');
+    file.seekg(0);
+
+    if (!file.read(buffer.data(), size))
+      throw std::runtime_error("Failed to read file.");
+
+    file_meta.file_hash.emplace();
+    SHA256(reinterpret_cast<const unsigned char*>(buffer.data()),
+           buffer.size(),
+           file_meta.file_hash->data());
   }
 };
 
@@ -105,13 +137,6 @@ void printTree(Node& node, std::string prefix = "") {
   }
 }
 
-int main() {
-  const std::string root_dir = "./test/100 Areas";
-  fs::path root_path{root_dir};
-  DirectoryTree root_dir_tree(root_path);
+int main() {}
 
-  printTree(root_dir_tree.root);
-}
-
-// TODO: Create hash function from openssl/sha.h
 // TODO: Diff Strategy: First Pass: path + size + mtime; Second Pass: Hash
