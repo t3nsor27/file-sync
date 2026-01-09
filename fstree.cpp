@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -109,10 +110,34 @@ struct Node {
 
 struct DirectoryTree {
   fs::path root_path;
-  Node root;
+  std::unique_ptr<Node> root;
+  std::unordered_map<fs::path, Node*> index;
 
   DirectoryTree(fs::path dir_path)
-      : root_path(dir_path), root(Node::directory(dir_path)) {}
+      : root_path(dir_path),
+        root(std::make_unique<Node>(Node::directory(dir_path))) {
+    buildIndex(*root);
+  }
+
+ private:
+  void buildIndex(Node& node) {
+    index[node.path] = &node;
+    if (node.type == NodeType::Directory) {
+      for (auto const& children : get_children(node.data)) {
+        buildIndex(*children);
+      }
+    }
+  }
+};
+
+enum class ChangeType : uint8_t { Added, Deleted, Modified };
+
+struct NodeDiff {
+  fs::path path;
+  ChangeType type;
+
+  std::optional<std::shared_ptr<Node>> old_node;
+  std::optional<std::shared_ptr<Node>> new_node;
 };
 
 void printTree(Node& node, std::string prefix = "") {
@@ -125,6 +150,6 @@ void printTree(Node& node, std::string prefix = "") {
   }
 }
 
-int main() {}
-
 // TODO: Diff Strategy: First Pass: path + size + mtime; Second Pass: Hash
+
+int main() {}
