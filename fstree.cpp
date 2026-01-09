@@ -132,12 +132,20 @@ struct DirectoryTree {
 
 enum class ChangeType : uint8_t { Added, Deleted, Modified };
 
+struct NodeSnapshot {
+  fs::path path;
+  NodeType type;
+  fs::file_time_type mtime;
+  uint64_t size = 0;         // files only
+  std::optional<Hash> hash;  // files only
+};
+
 struct NodeDiff {
   fs::path path;
   ChangeType type;
 
-  std::optional<std::shared_ptr<Node>> old_node;
-  std::optional<std::shared_ptr<Node>> new_node;
+  std::optional<NodeSnapshot> old_node;
+  std::optional<NodeSnapshot> new_node;
 };
 
 void printTree(Node& node, std::string prefix = "") {
