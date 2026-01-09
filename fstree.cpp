@@ -192,7 +192,10 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
         auto new_it = new_vec.begin();
         for (; old_it != old_vec.end() && new_it != new_vec.end();) {
           if ((*old_it)->path == (*new_it)->path) {
-            if ((*old_it)->type == NodeType::File) {
+            if ((*old_it)->type !=
+                (*new_it)->type) {  // Handles File <-> Directory
+              nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
+            } else if ((*old_it)->type == NodeType::File) {
               const auto& old_it_meta = std::get<FileMeta>((*old_it)->data);
               const auto& new_it_meta = std::get<FileMeta>((*new_it)->data);
               if (old_it_meta.size == new_it_meta.size) {
