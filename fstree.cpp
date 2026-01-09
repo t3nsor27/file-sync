@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -171,6 +172,61 @@ struct NodeDiff {
         ChangeType::Modified, NodeSnapshot(old_node), NodeSnapshot(new_node)};
   }
 };
+
+std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
+                               DirectoryTree& new_tree) {
+  std::vector<NodeDiff> nodeDiffVec;
+
+  std::function<void(const Node*, const Node*)> diffLoop =
+      [&](const Node* old_node, const Node* new_node) {
+        const std::vector<std::unique_ptr<Node>>& old_vec =
+            get_children(old_node->data);
+        const std::vector<std::unique_ptr<Node>>& new_vec =
+            get_children(new_node->data);
+        auto old_it = old_vec.begin();
+        auto new_it = new_vec.begin();
+        for (; old_it != old_vec.end() && new_it != new_vec.end();) {
+          if ((*old_it)->path == (*new_it)->path) {
+            if ((*old_it)->type == NodeType::File) {
+              const auto& old_it_meta = std::get<FileMeta>((*old_it)->data);
+              const auto& new_it_meta = std::get<FileMeta>((*new_it)->data);
+              if (old_it_meta.size == new_it_meta.size) {
+                (*old_it)->generate_hash(old_tree.root_path);
+                (*new_it)->generate_hash(new_tree.root_path);
+                if (old_it_meta.file_hash != new_it_meta.file_hash) {
+                  nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
+                }
+              } else {
+                nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
+              }
+            } else {
+              diffLoop(old_it->get(), new_it->get());
+            }
+            old_it++;
+            new_it++;
+          } else if ((*old_it)->name < (*new_it)->name) {
+            nodeDiffVec.push_back(NodeDiff::deleted(**old_it));
+            old_it++;
+          } else {
+            nodeDiffVec.push_back(NodeDiff::added(**new_it));
+            new_it++;
+          }
+        }
+        while (old_it != old_vec.end()) {
+          nodeDiffVec.push_back(NodeDiff::deleted(**old_it));
+          ++old_it;
+        }
+
+        while (new_it != new_vec.end()) {
+          nodeDiffVec.push_back(NodeDiff::added(**new_it));
+          ++new_it;
+        }
+      };
+
+  diffLoop(old_tree.root.get(), new_tree.root.get());
+
+  return nodeDiffVec;
+}
 
 void printTree(Node& node, std::string prefix = "") {
   std::cout << prefix << "|--" << node.name << "\n";
