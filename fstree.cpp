@@ -238,6 +238,12 @@ void printTree(Node& node, std::string prefix = "") {
   }
 }
 
-// TODO: Diff Strategy: First Pass: path + size + mtime; Second Pass: Hash
+void printHash(const Hash& hash) {
+  std::cout << std::hex << std::setfill('0');
+  for (auto& v : hash) {
+    std::cout << std::setw(2) << static_cast<unsigned int>(v);
+  }
+  std::cout << std::dec;
+}
 
 int main() {}
