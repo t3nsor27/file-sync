@@ -25,9 +25,9 @@ struct FileMeta {
 };
 
 struct Node {
+  fs::path path;
   std::string name;
   NodeType type;
-  fs::path path;
   fs::file_time_type mtime;
 
   using Data = std::variant<FileMeta, std::vector<std::unique_ptr<Node>>>;
@@ -35,15 +35,11 @@ struct Node {
   Data data;
 
  private:
-  Node(std::string name,
-       NodeType type,
-       fs::path path,
-       fs::file_time_type mtime,
-       Data&& data)
-      : name(std::move(name)),
+  Node(NodeType type, fs::path path, Data&& data)
+      : path(std::move(path)),
+        name(this->path.filename().string()),
         type(type),
-        path(std::move(path)),
-        mtime(mtime),
+        mtime(fs::last_write_time(this->path)),
         data(std::move(data)) {}
 
  public:
@@ -54,11 +50,7 @@ struct Node {
     FileMeta meta;
     meta.size = fs::file_size(file_path);
 
-    return Node(file_path.filename().string(),
-                NodeType::File,
-                std::move(file_path),
-                fs::last_write_time(file_path),
-                Data{std::move(meta)});
+    return Node(NodeType::File, std::move(file_path), Data{std::move(meta)});
   }
 
   static Node directory(fs::path dir_path) {
@@ -87,11 +79,8 @@ struct Node {
             return a->name < b->name;
         });
 
-    return Node(dir_path.filename().string(),
-                NodeType::Directory,
-                std::move(dir_path),
-                fs::last_write_time(dir_path),
-                Data{std::move(children)});
+    return Node(
+        NodeType::Directory, std::move(dir_path), Data{std::move(children)});
   }
 
   void generate_hash() {
