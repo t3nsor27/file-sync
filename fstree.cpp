@@ -136,16 +136,39 @@ struct NodeSnapshot {
   fs::path path;
   NodeType type;
   fs::file_time_type mtime;
-  uint64_t size = 0;         // files only
-  std::optional<Hash> hash;  // files only
+  uint64_t size = 0;              // files only
+  std::optional<Hash> file_hash;  // files only
+
+  NodeSnapshot(const Node& node)
+      : path(node.path), type(node.type), mtime(node.mtime) {
+    if (node.type == NodeType::File) {
+      const FileMeta& meta = std::get<FileMeta>(node.data);
+      size = meta.size;
+      if (meta.file_hash.has_value()) {
+        file_hash = meta.file_hash;
+      }
+    }
+  }
 };
 
 struct NodeDiff {
-  fs::path path;
   ChangeType type;
 
   std::optional<NodeSnapshot> old_node;
   std::optional<NodeSnapshot> new_node;
+
+  static NodeDiff added(const Node& new_node) {
+    return {ChangeType::Added, std::nullopt, NodeSnapshot(new_node)};
+  }
+
+  static NodeDiff deleted(const Node& old_node) {
+    return {ChangeType::Deleted, NodeSnapshot(old_node), std::nullopt};
+  }
+
+  static NodeDiff modified(const Node& old_node, const Node& new_node) {
+    return {
+        ChangeType::Modified, NodeSnapshot(old_node), NodeSnapshot(new_node)};
+  }
 };
 
 void printTree(Node& node, std::string prefix = "") {
