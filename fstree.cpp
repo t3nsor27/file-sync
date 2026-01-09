@@ -84,7 +84,7 @@ struct Node {
         NodeType::Directory, std::move(dir_path), Data{std::move(children)});
   }
 
-  void generate_hash() {
+  void generate_hash(const fs::path& root) {
     if (type != NodeType::File)
       return;
 
@@ -92,7 +92,7 @@ struct Node {
     if (file_meta.file_hash.has_value())
       return;
 
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    std::ifstream file(root / path, std::ios::binary | std::ios::ate);
     if (!file)
       throw std::runtime_error("Failed to open file.");
 
@@ -121,10 +121,11 @@ struct DirectoryTree {
 
  private:
   void buildIndex(Node& node) {
+    node.path = fs::relative(node.path, root_path);
     index[node.path] = &node;
     if (node.type == NodeType::Directory) {
-      for (auto const& children : get_children(node.data)) {
-        buildIndex(*children);
+      for (auto const& child : get_children(node.data)) {
+        buildIndex(*child);
       }
     }
   }
