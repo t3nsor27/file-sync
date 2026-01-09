@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -93,7 +94,7 @@ struct Node {
                 Data{std::move(children)});
   }
 
-  void create_hash() {
+  void generate_hash() {
     if (type != NodeType::File)
       return;
 
@@ -106,16 +107,14 @@ struct Node {
       throw std::runtime_error("Failed to open file.");
 
     auto size = file.tellg();
-    std::string buffer(static_cast<size_t>(size), '\0');
+    std::vector<uint8_t> buffer(static_cast<size_t>(size));
     file.seekg(0);
 
-    if (!file.read(buffer.data(), size))
+    if (!file.read(reinterpret_cast<char*>(buffer.data()), size))
       throw std::runtime_error("Failed to read file.");
 
     file_meta.file_hash.emplace();
-    SHA256(reinterpret_cast<const unsigned char*>(buffer.data()),
-           buffer.size(),
-           file_meta.file_hash->data());
+    SHA256(buffer.data(), buffer.size(), file_meta.file_hash->data());
   }
 };
 
