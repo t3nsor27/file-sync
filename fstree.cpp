@@ -17,7 +17,6 @@
 
 namespace fs = std::filesystem;
 using Hash = std::array<uint8_t, 32>;
-#define get_children std::get<std::vector<std::unique_ptr<Node>>>
 
 enum class NodeType : uint8_t { File, Directory };
 
@@ -109,6 +108,14 @@ struct Node {
   }
 };
 
+inline auto& children(Node& n) {
+  return std::get<std::vector<std::unique_ptr<Node>>>(n.data);
+}
+
+inline const auto& children(const Node& n) {
+  return std::get<std::vector<std::unique_ptr<Node>>>(n.data);
+}
+
 struct DirectoryTree {
   fs::path root_path;
   std::unique_ptr<Node> root;
@@ -125,7 +132,7 @@ struct DirectoryTree {
     node.path = fs::relative(node.path, root_path);
     index[node.path] = &node;
     if (node.type == NodeType::Directory) {
-      for (auto const& child : get_children(node.data)) {
+      for (auto const& child : children(node)) {
         buildIndex(*child);
       }
     }
@@ -179,10 +186,8 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
 
   std::function<void(const Node*, const Node*)> diffLoop =
       [&](const Node* old_node, const Node* new_node) {
-        const std::vector<std::unique_ptr<Node>>& old_vec =
-            get_children(old_node->data);
-        const std::vector<std::unique_ptr<Node>>& new_vec =
-            get_children(new_node->data);
+        const std::vector<std::unique_ptr<Node>>& old_vec = children(*old_node);
+        const std::vector<std::unique_ptr<Node>>& new_vec = children(*new_node);
         auto old_it = old_vec.begin();
         auto new_it = new_vec.begin();
         for (; old_it != old_vec.end() && new_it != new_vec.end();) {
@@ -231,7 +236,7 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
 void printTree(Node& node, std::string prefix = "") {
   std::cout << prefix << "|--" << node.name << "\n";
   if (node.type == NodeType::Directory) {
-    auto& childrens = get_children(node.data);
+    auto& childrens = children(node);
     for (auto const& children : childrens) {
       printTree(*children, prefix + "|  ");
     }
