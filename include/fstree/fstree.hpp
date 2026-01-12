@@ -3,8 +3,10 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <istream>
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -80,4 +82,6 @@ std::vector<NodeDiff> diffTree(DirectoryTree&, DirectoryTree&);
 void printTree(Node&, std::string prefix = "");
 void printHash(const Hash&);
 
+void serializeNode(std::ostream&, const Node&);
+std::unique_ptr<Node> deserializeNode(std::istream&, const fs::path&);
 }  // namespace fstree

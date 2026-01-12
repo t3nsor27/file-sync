@@ -1,11 +1,15 @@
 #include "../include/fstree/fstree.hpp"
 #include <openssl/sha.h>
 #include <algorithm>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
+#include "../include/fstree/wire.hpp"
 
 namespace fstree {
 
@@ -222,4 +226,66 @@ void printHash(const Hash& hash) {
   std::cout << std::dec;
 }
 
+void serializeNode(std::ostream& os, const Node& node) {
+  wire::write_u8(os, static_cast<uint8_t>(node.type));
+  wire::write_u64(os, node.mtime.time_since_epoch().count());
+  wire::write_string(os, node.name);
+
+  if (node.type == NodeType::File) {
+    const auto& meta = std::get<FileMeta>(node.data);
+
+    wire::write_u64(os, meta.size);
+
+    wire::write_u8(os, meta.file_hash.has_value());
+    if (meta.file_hash) {
+      os.write(reinterpret_cast<const char*>(meta.file_hash->data()),
+               meta.file_hash->size());
+    }
+  } else {
+    const auto& kids = children(node);
+    wire::write_u32(os, static_cast<uint32_t>(kids.size()));
+
+    for (const auto& kid : kids) {
+      serializeNode(os, *kid);
+    }
+  }
+}
+
+std::unique_ptr<Node> deserializeNode(std::istream& is,
+                                      const fs::path& parent) {
+  NodeType type = static_cast<NodeType>(wire::read_u8(is));
+  auto mtime =
+      fs::file_time_type(fs::file_time_type::duration(wire::read_u64(is)));
+
+  std::string name = wire::read_string(is);
+  fs::path full_path = parent / name;
+
+  if (type == NodeType::File) {
+    FileMeta meta;
+    meta.size = wire::read_u64(is);
+
+    bool has_hash = wire::read_u8(is);
+    if (has_hash) {
+      meta.file_hash.emplace();  // construct Hash inside optional
+      is.read(reinterpret_cast<char*>(meta.file_hash->data()),
+              meta.file_hash->size());
+    }
+    auto node = std::unique_ptr<Node>(
+        new Node(NodeType::File, full_path, Node::Data{meta}));
+    node->mtime = mtime;
+    return node;
+  } else {
+    uint32_t count = wire::read_u32(is);
+    std::vector<std::unique_ptr<Node>> kids;
+
+    for (uint32_t i = 0; i < count; i++) {
+      kids.push_back(deserializeNode(is, full_path));
+    }
+
+    auto node = std::unique_ptr<Node>(
+        new Node(NodeType::Directory, full_path, Node::Data{std::move(kids)}));
+    node->mtime = mtime;
+    return node;
+  }
+}
 }  // namespace fstree
