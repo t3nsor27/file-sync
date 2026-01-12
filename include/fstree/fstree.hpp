@@ -36,7 +36,9 @@ struct Node {
   static Node file(fs::path);
   static Node directory(fs::path);
   void generate_hash(const fs::path&);
+  friend std::unique_ptr<Node> deserializeNode(std::istream&, const fs::path&);
 
+ private:
   Node(NodeType, fs::path, Data&&);
 };
 
