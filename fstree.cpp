@@ -60,6 +60,7 @@ struct Node {
     if (!fs::directory_entry(dir_path).is_directory())
       throw std::invalid_argument("Path must point a directory.");
 
+    // Make node of each children
     for (auto const& dir_entry : fs::directory_iterator(dir_path)) {
       if (dir_entry.is_regular_file()) {
         children.push_back(
@@ -70,6 +71,8 @@ struct Node {
       }
     }
 
+    // Sort childrens, giving priority to directories then name in
+    // lexicographically increasing order
     std::sort(
         children.begin(),
         children.end(),
@@ -129,7 +132,9 @@ struct DirectoryTree {
 
  private:
   void buildIndex(Node& node) {
+    // Stores path relative to the DirectoryTree.root_path
     node.path = fs::relative(node.path, root_path);
+
     index[node.path] = &node;
     if (node.type == NodeType::Directory) {
       for (auto const& child : children(node)) {
@@ -184,12 +189,15 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
                                DirectoryTree& new_tree) {
   std::vector<NodeDiff> nodeDiffVec;
 
+  // Function to recursively loop through each node of DirectoryTree
   std::function<void(const Node*, const Node*)> diffLoop =
       [&](const Node* old_node, const Node* new_node) {
         const std::vector<std::unique_ptr<Node>>& old_vec = children(*old_node);
         const std::vector<std::unique_ptr<Node>>& new_vec = children(*new_node);
         auto old_it = old_vec.begin();
         auto new_it = new_vec.begin();
+
+        // Two pointer approach assuming sorted children vector
         for (; old_it != old_vec.end() && new_it != new_vec.end();) {
           if ((*old_it)->path == (*new_it)->path) {
             if ((*old_it)->type !=
@@ -220,6 +228,7 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
             new_it++;
           }
         }
+
         while (old_it != old_vec.end()) {
           nodeDiffVec.push_back(NodeDiff::deleted(**old_it));
           ++old_it;
@@ -236,6 +245,7 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
   return nodeDiffVec;
 }
 
+// Prints each children of a node recursively through DFS
 void printTree(Node& node, std::string prefix = "") {
   std::cout << prefix << "|--" << node.name << "\n";
   if (node.type == NodeType::Directory) {
