@@ -31,26 +31,25 @@ struct Node {
 
   Data data;
 
-  static Node file(fs::path file_path);
-  static Node directory(fs::path dir_path);
-  void generate_hash(const fs::path& root);
+  static Node file(fs::path);
+  static Node directory(fs::path);
+  void generate_hash(const fs::path&);
 
- private:
-  Node(NodeType type, fs::path path, Data&& data);
+  Node(NodeType, fs::path, Data&&);
 };
 
-const std::vector<std::unique_ptr<Node>>& children(const Node& n);
-std::vector<std::unique_ptr<Node>>& children(Node& n);
+const std::vector<std::unique_ptr<Node>>& children(const Node&);
+std::vector<std::unique_ptr<Node>>& children(Node&);
 
 struct DirectoryTree {
   fs::path root_path;
   std::unique_ptr<Node> root;
   std::unordered_map<fs::path, Node*> index;
 
-  explicit DirectoryTree(fs::path dir_path);
+  explicit DirectoryTree(fs::path);
 
  private:
-  void buildIndex(Node& node);
+  void buildIndex(Node&);
 };
 
 enum class ChangeType : uint8_t { Added, Deleted, Modified };
@@ -62,7 +61,7 @@ struct NodeSnapshot {
   uint64_t size = 0;              // files only
   std::optional<Hash> file_hash;  // files only
 
-  explicit NodeSnapshot(const Node& node);
+  explicit NodeSnapshot(const Node&);
 };
 
 struct NodeDiff {
@@ -71,14 +70,14 @@ struct NodeDiff {
   std::optional<NodeSnapshot> old_node;
   std::optional<NodeSnapshot> new_node;
 
-  static NodeDiff added(const Node& new_node);
-  static NodeDiff deleted(const Node& old_node);
-  static NodeDiff modified(const Node& old_node, const Node& new_node);
+  static NodeDiff added(const Node&);
+  static NodeDiff deleted(const Node&);
+  static NodeDiff modified(const Node&, const Node&);
 };
 
-std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
-                               DirectoryTree& new_tree);
+std::vector<NodeDiff> diffTree(DirectoryTree&, DirectoryTree&);
 
-void printTree(Node& node, std::string prefix = "");
-void printHash(const Hash& hash);
+void printTree(Node&, std::string prefix = "");
+void printHash(const Hash&);
+
 }  // namespace fstree
