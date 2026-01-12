@@ -40,6 +40,7 @@ struct Node {
 
  private:
   Node(NodeType, fs::path, Data&&);
+  Node(fs::path, std::string, NodeType, fs::file_time_type, Data&&);
 };
 
 const std::vector<std::unique_ptr<Node>>& children(const Node&);

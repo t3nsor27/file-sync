@@ -22,6 +22,17 @@ Node::Node(NodeType type, fs::path path, Data&& data)
       mtime(fs::last_write_time(this->path)),
       data(std::move(data)) {}
 
+Node::Node(fs::path path,
+           std::string name,
+           NodeType type,
+           fs::file_time_type mtime,
+           Data&& data)
+    : path(std::move(path)),
+      name(name),
+      type(type),
+      mtime(mtime),
+      data(std::move(data)) {}
+
 Node Node::file(fs::path file_path) {
   if (!fs::directory_entry(file_path).is_regular_file())
     throw std::invalid_argument("Path must point to a file.");
