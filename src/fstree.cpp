@@ -241,6 +241,7 @@ void serializeNode(std::ostream& os, const Node& node) {
   wire::write_u8(os, static_cast<uint8_t>(node.type));
   wire::write_u64(os, node.mtime.time_since_epoch().count());
   wire::write_string(os, node.name);
+  wire::write_string(os, node.path.string());
 
   if (node.type == NodeType::File) {
     const auto& meta = std::get<FileMeta>(node.data);
@@ -269,7 +270,7 @@ std::unique_ptr<Node> deserializeNode(std::istream& is,
       fs::file_time_type(fs::file_time_type::duration(wire::read_u64(is)));
 
   std::string name = wire::read_string(is);
-  fs::path full_path = parent / name;
+  fs::path full_path = fs::path(wire::read_string(is));
 
   if (type == NodeType::File) {
     FileMeta meta;
@@ -282,8 +283,7 @@ std::unique_ptr<Node> deserializeNode(std::istream& is,
               meta.file_hash->size());
     }
     auto node = std::unique_ptr<Node>(
-        new Node(NodeType::File, full_path, Node::Data{meta}));
-    node->mtime = mtime;
+        new Node{full_path, name, type, mtime, Node::Data{meta}});
     return node;
   } else {
     uint32_t count = wire::read_u32(is);
@@ -294,8 +294,7 @@ std::unique_ptr<Node> deserializeNode(std::istream& is,
     }
 
     auto node = std::unique_ptr<Node>(
-        new Node(NodeType::Directory, full_path, Node::Data{std::move(kids)}));
-    node->mtime = mtime;
+        new Node{full_path, name, type, mtime, Node::Data{std::move(kids)}});
     return node;
   }
 }
