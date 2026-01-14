@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <variant>
 #include <vector>
+#include "wire.hpp"
 
 namespace fstree {
 namespace fs = std::filesystem;

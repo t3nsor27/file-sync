@@ -9,7 +9,6 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
-#include "../include/fstree/wire.hpp"
 
 namespace fstree {
 
