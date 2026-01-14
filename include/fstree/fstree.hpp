@@ -37,7 +37,7 @@ struct Node {
   static Node file(fs::path);
   static Node directory(fs::path);
   void generate_hash(const fs::path&);
-  friend std::unique_ptr<Node> deserializeNode(std::istream&, const fs::path&);
+  friend std::unique_ptr<Node> deserializeNode(std::istream&);
 
  private:
   Node(NodeType, fs::path, Data&&);
@@ -87,5 +87,5 @@ void printTree(Node&, std::string prefix = "");
 void printHash(const Hash&);
 
 void serializeNode(std::ostream&, const Node&);
-std::unique_ptr<Node> deserializeNode(std::istream&, const fs::path&);
+std::unique_ptr<Node> deserializeNode(std::istream&);
 }  // namespace fstree

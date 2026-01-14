@@ -262,8 +262,7 @@ void serializeNode(std::ostream& os, const Node& node) {
   }
 }
 
-std::unique_ptr<Node> deserializeNode(std::istream& is,
-                                      const fs::path& parent) {
+std::unique_ptr<Node> deserializeNode(std::istream& is) {
   NodeType type = static_cast<NodeType>(wire::read_u8(is));
   auto mtime =
       fs::file_time_type(fs::file_time_type::duration(wire::read_u64(is)));
@@ -289,7 +288,7 @@ std::unique_ptr<Node> deserializeNode(std::istream& is,
     std::vector<std::unique_ptr<Node>> kids;
 
     for (uint32_t i = 0; i < count; i++) {
-      kids.push_back(deserializeNode(is, full_path));
+      kids.push_back(deserializeNode(is));
     }
 
     auto node = std::unique_ptr<Node>(
