@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 
 namespace fstree {
@@ -300,5 +301,21 @@ std::unique_ptr<Node> deserializeNode(std::istream& is) {
         new Node{full_path, name, type, mtime, Node::Data{std::move(kids)}});
     return node;
   }
+}
+
+std::vector<uint8_t> serializeTree(const DirectoryTree& tree) {
+  std::ostringstream os(std::ios::binary);
+  wire::write_string(os, tree.root_path);
+  serializeNode(os, *tree.root);
+  const std::string& s = os.str();
+  return std::vector<uint8_t>(s.begin(), s.end());
+}
+
+DirectoryTree deserializeTree(std::vector<uint8_t> data) {
+  std::istringstream is(std::string(data.begin(), data.end()),
+                        std::ios::binary);
+  fs::path root_path = fs::path(wire::read_string(is));
+  auto node = deserializeNode(is);
+  return DirectoryTree(root_path, std::move(node));
 }
 }  // namespace fstree

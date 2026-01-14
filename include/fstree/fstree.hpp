@@ -89,4 +89,7 @@ void printHash(const Hash&);
 
 void serializeNode(std::ostream&, const Node&);
 std::unique_ptr<Node> deserializeNode(std::istream&);
+
+std::vector<uint8_t> serializeTree(const DirectoryTree&);
+DirectoryTree deserializeTree(std::vector<uint8_t>);
 }  // namespace fstree
