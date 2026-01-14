@@ -114,6 +114,11 @@ DirectoryTree::DirectoryTree(fs::path dir_path)
   buildIndex(*root);
 }
 
+DirectoryTree::DirectoryTree(fs::path dir_path, std::unique_ptr<Node> node)
+    : root_path(dir_path), root(std::move(node)) {
+  buildIndex(*root);
+}
+
 void DirectoryTree::buildIndex(Node& node) {
   // Stores path relative to the DirectoryTree.root_path
   node.path = fs::relative(node.path, root_path);

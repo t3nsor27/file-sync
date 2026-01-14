@@ -53,6 +53,7 @@ struct DirectoryTree {
   std::unordered_map<fs::path, Node*> index;
 
   explicit DirectoryTree(fs::path);
+  explicit DirectoryTree(fs::path, std::unique_ptr<Node>);
 
  private:
   void buildIndex(Node&);
