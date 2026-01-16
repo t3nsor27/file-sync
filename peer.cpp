@@ -20,34 +20,24 @@ class Session : public std::enable_shared_from_this<Session> {
         strand_(asio::make_strand(socket_.get_executor())),
         on_close_(on_close) {}
 
-  void sendTree(const fstree::DirectoryTree& tree) {
-    asio::dispatch(strand_, [self = shared_from_this(), &tree] {
-      // If another op is running, re-dispatch
-      if (self->busy_.exchange(true)) {
-        asio::post(self->strand_, [self, &tree] {
-          self->sendTree(tree);
-        });
-        return;
-      }
+  asio::awaitable<void> sendTree(const fstree::DirectoryTree& tree) {
+    // Ensure strand entry
+    co_await asio::dispatch(strand_, asio::use_awaitable);
 
-      // We own this session now
-      self->buffer_ = fstree::serializeTree(tree);
-      self->size_be_ = htobe64(self->buffer_.size());
+    while (busy_.exchange(true)) {
+      co_await asio::post(strand_, asio::use_awaitable);
+    }
 
-      std::vector<asio::const_buffer> buffers{
-          asio::buffer(&self->size_be_, sizeof(self->size_be_)),
-          asio::buffer(self->buffer_)};
+    // We own this session now
+    buffer_ = fstree::serializeTree(tree);
+    size_be_ = htobe64(buffer_.size());
 
-      asio::async_write(
-          self->socket_,
-          buffers,
-          asio::bind_executor(self->strand_,
-                              [self](boost::system::error_code ec, auto) {
-                                self->busy_.store(false);
-                                if (ec)
-                                  self->close();
-                              }));
-    });
+    std::vector<asio::const_buffer> buffers{
+        asio::buffer(&size_be_, sizeof(size_be_)), asio::buffer(buffer_)};
+
+    co_await asio::async_write(socket_, buffers, asio::use_awaitable);
+
+    busy_.store(false);
   }
 
   asio::awaitable<fstree::DirectoryTree> receiveTree() {
