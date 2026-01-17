@@ -149,19 +149,18 @@ class Peer : public std::enable_shared_from_this<Peer> {
             boost::system::error_code ec, tcp::resolver::results_type results) {
           if (ec)
             return;
-          tcp::socket socket = tcp::socket(self->io_);
-          asio::async_connect(socket,
-                              results,
-                              [self,
-                               socket = std::move(socket),
-                               on_connect = std::move(on_connect)](
-                                  boost::system::error_code ec, auto) mutable {
-                                if (ec)
-                                  return;
-                                auto session =
-                                    self->createSession(std::move(socket));
-                                on_connect(std::weak_ptr<Session>(session));
-                              });
+          auto socket = std::make_shared<tcp::socket>(self->io_);
+          asio::async_connect(
+              *socket,
+              results,
+              [self, socket, on_connect = std::move(on_connect)](
+                  boost::system::error_code ec, auto) mutable {
+                if (ec) {
+                  return;
+                }
+                auto session = self->createSession(std::move(*socket));
+                on_connect(std::weak_ptr<Session>(session));
+              });
         });
   }
 
