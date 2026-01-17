@@ -107,6 +107,11 @@ class Peer : public std::enable_shared_from_this<Peer> {
         acceptor_(io_, tcp::endpoint(tcp::v4(), port)),
         resolver_(io_) {}
 
+  // Expose execution context
+  asio::any_io_executor getExecutor() {
+    return io_.get_executor();
+  }
+
   // Lifecycle control
   void run() {
     io_.run();
