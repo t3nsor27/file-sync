@@ -151,13 +151,14 @@ class Peer : public std::enable_shared_from_this<Peer> {
   }
 
  private:
-  void createSession(tcp::socket socket) {
+  std::shared_ptr<Session> createSession(tcp::socket socket) {
     auto session = std::make_shared<Session>(
         std::move(socket),
         [self = shared_from_this()](std::shared_ptr<Session> s) {
           self->sessions_.erase(s);
         });
     sessions_.insert(session);
+    return session;
   }
 
   boost::asio::io_context io_;
