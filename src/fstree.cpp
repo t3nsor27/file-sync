@@ -112,7 +112,7 @@ std::vector<std::unique_ptr<Node>>& children(Node& n) {
 DirectoryTree::DirectoryTree(fs::path dir_path)
     : root_path(dir_path),
       root(std::make_unique<Node>(Node::directory(dir_path))) {
-  buildIndex(*root);
+  buildIndex(*root, true);
 }
 
 DirectoryTree::DirectoryTree(fs::path dir_path, std::unique_ptr<Node> node)
@@ -120,14 +120,15 @@ DirectoryTree::DirectoryTree(fs::path dir_path, std::unique_ptr<Node> node)
   buildIndex(*root);
 }
 
-void DirectoryTree::buildIndex(Node& node) {
+void DirectoryTree::buildIndex(Node& node, bool change_path) {
   // Stores path relative to the DirectoryTree.root_path
-  node.path = fs::relative(node.path, root_path);
+  if (change_path)
+    node.path = fs::relative(node.path, root_path);
 
   index[node.path] = &node;
   if (node.type == NodeType::Directory) {
     for (auto const& child : children(node)) {
-      buildIndex(*child);
+      buildIndex(*child, change_path);
     }
   }
 }

@@ -56,7 +56,7 @@ struct DirectoryTree {
   explicit DirectoryTree(fs::path, std::unique_ptr<Node>);
 
  private:
-  void buildIndex(Node&);
+  void buildIndex(Node&, bool change_path = false);
 };
 
 enum class ChangeType : uint8_t { Added, Deleted, Modified };
