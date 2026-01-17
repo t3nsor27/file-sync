@@ -88,6 +88,9 @@ class Session : public std::enable_shared_from_this<Session> {
 
 class Peer : public std::enable_shared_from_this<Peer> {
  public:
+  using OnAccept = std::function<void(std::weak_ptr<Session>)>;
+  using OnConnect = std::function<void(std::weak_ptr<Session>)>;
+
   Peer(uint16_t port)
       : io_(),
         acceptor_(io_, tcp::endpoint(tcp::v4(), port)),
@@ -103,13 +106,14 @@ class Peer : public std::enable_shared_from_this<Peer> {
   }
 
   // Acceptor
-  void doAccept() {
+  void doAccept(OnAccept on_accept) {
     acceptor_.async_accept(
-        [self = shared_from_this()](boost::system::error_code ec,
-                                    tcp::socket socket) {
-          if (!ec) {
-            self->createSession(std::move(socket));
-          }
+        [self = shared_from_this(), on_accept = std::move(on_accept)](
+            boost::system::error_code ec, tcp::socket socket) mutable {
+          if (ec)
+            return;
+          auto session = self->createSession(std::move(socket));
+          on_accept(std::weak_ptr<Session>(session));
         });
   }
 
@@ -119,23 +123,29 @@ class Peer : public std::enable_shared_from_this<Peer> {
   }
 
   // Resolver
-  void doResolve(const std::string& host, uint16_t port) {
+  void doResolveAndConnect(const std::string& host,
+                           uint16_t port,
+                           OnConnect on_connect) {
     resolver_.async_resolve(
         host,
         std::to_string(port),
-        [self = shared_from_this()](boost::system::error_code ec,
-                                    tcp::resolver::results_type results) {
-          if (!ec) {
-            tcp::socket socket = tcp::socket(self->io_);
-            asio::async_connect(
-                socket,
-                results,
-                [self, socket = std::move(socket)](boost::system::error_code ec,
-                                                   auto) mutable {
-                  if (!ec)
-                    self->createSession(std::move(socket));
-                });
-          }
+        [self = shared_from_this(), on_connect = std::move(on_connect)](
+            boost::system::error_code ec, tcp::resolver::results_type results) {
+          if (ec)
+            return;
+          tcp::socket socket = tcp::socket(self->io_);
+          asio::async_connect(socket,
+                              results,
+                              [self,
+                               socket = std::move(socket),
+                               on_connect = std::move(on_connect)](
+                                  boost::system::error_code ec, auto) mutable {
+                                if (ec)
+                                  return;
+                                auto session =
+                                    self->createSession(std::move(socket));
+                                on_connect(std::weak_ptr<Session>(session));
+                              });
         });
   }
 
