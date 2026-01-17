@@ -102,10 +102,15 @@ class Peer : public std::enable_shared_from_this<Peer> {
   using OnAccept = std::function<void(std::weak_ptr<Session>)>;
   using OnConnect = std::function<void(std::weak_ptr<Session>)>;
 
-  Peer(uint16_t port)
-      : io_(),
-        acceptor_(io_, tcp::endpoint(tcp::v4(), port)),
-        resolver_(io_) {}
+  Peer(uint16_t port) : io_(), acceptor_(io_), resolver_(io_) {
+    tcp::endpoint ep(tcp::v6(), port);
+
+    acceptor_.open(ep.protocol());
+    acceptor_.set_option(asio::ip::v6_only(false));
+    acceptor_.set_option(tcp::acceptor::reuse_address(true));
+    acceptor_.bind(ep);
+    acceptor_.listen();
+  }
 
   // Expose execution context
   asio::any_io_executor getExecutor() {
