@@ -116,7 +116,8 @@ DirectoryTree::DirectoryTree(fs::path dir_path)
 }
 
 DirectoryTree::DirectoryTree(fs::path dir_path, std::unique_ptr<Node> node)
-    : root_path(dir_path), root(std::move(node)) {
+    : root_path(dir_path),
+      root(std::move(node)) {
   buildIndex(*root);
 }
 
@@ -136,7 +137,9 @@ void DirectoryTree::buildIndex(Node& node, bool change_path) {
 // ---------- Node Snapshot ----------
 
 NodeSnapshot::NodeSnapshot(const Node& node)
-    : path(node.path), type(node.type), mtime(node.mtime) {
+    : path(node.path),
+      type(node.type),
+      mtime(node.mtime) {
   if (node.type == NodeType::File) {
     const FileMeta& meta = std::get<FileMeta>(node.data);
     size = meta.size;
