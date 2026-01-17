@@ -29,14 +29,19 @@ class Session : public std::enable_shared_from_this<Session> {
     }
 
     // We own this session now
-    buffer_ = fstree::serializeTree(tree);
-    size_be_ = htobe64(buffer_.size());
+    try {
+      buffer_ = fstree::serializeTree(tree);
+      size_be_ = htobe64(buffer_.size());
 
-    std::vector<asio::const_buffer> buffers{
-        asio::buffer(&size_be_, sizeof(size_be_)), asio::buffer(buffer_)};
+      std::vector<asio::const_buffer> buffers{
+          asio::buffer(&size_be_, sizeof(size_be_)), asio::buffer(buffer_)};
 
-    co_await asio::async_write(socket_, buffers, asio::use_awaitable);
-
+      co_await asio::async_write(socket_, buffers, asio::use_awaitable);
+    } catch (...) {
+      busy_.store(false);
+      close();
+      throw;
+    }
     busy_.store(false);
   }
 
@@ -49,23 +54,29 @@ class Session : public std::enable_shared_from_this<Session> {
       co_await asio::post(strand_, asio::use_awaitable);
     }
 
-    // read size
-    co_await asio::async_read(
-        socket_,
-        asio::buffer(&size_be_, sizeof(size_be_)),
-        asio::bind_executor(strand_, asio::use_awaitable));
+    try {
+      // read size
+      co_await asio::async_read(
+          socket_,
+          asio::buffer(&size_be_, sizeof(size_be_)),
+          asio::bind_executor(strand_, asio::use_awaitable));
 
-    buffer_.resize(be64toh(size_be_));
+      buffer_.resize(be64toh(size_be_));
 
-    // read payload
-    co_await asio::async_read(
-        socket_,
-        asio::buffer(buffer_),
-        asio::bind_executor(strand_, asio::use_awaitable));
+      // read payload
+      co_await asio::async_read(
+          socket_,
+          asio::buffer(buffer_),
+          asio::bind_executor(strand_, asio::use_awaitable));
 
-    busy_.store(false);
+      busy_.store(false);
 
-    co_return fstree::deserializeTree(buffer_);
+      co_return fstree::deserializeTree(buffer_);
+    } catch (...) {
+      busy_.store(false);
+      close();
+      throw;
+    }
   }
 
   void close() {
