@@ -141,7 +141,10 @@ class Peer : public std::enable_shared_from_this<Peer> {
 
   // Session control
   void clearSessions() {
-    for (auto& s : sessions_) {
+    // s->close() deletes s from sessions_ without copying we would be
+    // deleting elements from sessions_ while iterating throught it, NOT SAFE
+    auto copy = sessions_;
+    for (auto& s : copy) {
       s->close();
     }
     sessions_.clear();
