@@ -1,4 +1,5 @@
 #include "../include/net/peer.hpp"
+#include <stdexcept>
 
 namespace net {
 Session::Session(tcp::socket socket, OnClose on_close)
@@ -47,7 +48,10 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTree() {
         asio::buffer(&size_be_, sizeof(size_be_)),
         asio::bind_executor(strand_, asio::use_awaitable));
 
-    buffer_.resize(be64toh(size_be_));
+    auto size = be64toh(size_be_);
+    if (size > MAX_TREE_SIZE)
+      throw std::runtime_error("Tree payload too large.\n");
+    buffer_.resize(size);
 
     // read payload
     co_await asio::async_read(

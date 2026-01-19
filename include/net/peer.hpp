@@ -14,6 +14,8 @@ namespace net {
 using boost::asio::ip::tcp;
 namespace asio = boost::asio;
 
+constexpr uint64_t MAX_TREE_SIZE = 64 * 1024 * 1024;  // 64MB
+
 class Session : public std::enable_shared_from_this<Session> {
  public:
   using OnClose = std::function<void(std::shared_ptr<Session>)>;
