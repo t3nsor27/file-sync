@@ -1,0 +1,62 @@
+#pragma once
+
+#include <endian.h>
+#include <atomic>
+#include <boost/asio.hpp>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <unordered_set>
+#include <vector>
+#include "../fstree/fstree.hpp"
+
+namespace net {
+using boost::asio::ip::tcp;
+namespace asio = boost::asio;
+
+class Session : public std::enable_shared_from_this<Session> {
+ public:
+  using OnClose = std::function<void(std::shared_ptr<Session>)>;
+
+  explicit Session(tcp::socket, OnClose);
+
+  asio::awaitable<void> sendTree(const fstree::DirectoryTree&);
+  asio::awaitable<fstree::DirectoryTree> receiveTree();
+  void close();
+
+ private:
+  OnClose on_close_;
+
+  tcp::socket socket_;
+  asio::strand<asio::any_io_executor> strand_;
+
+  std::atomic<bool> busy_{false};
+  std::vector<uint8_t> buffer_;
+  uint64_t size_be_{0};
+};
+
+class Peer : public std::enable_shared_from_this<Peer> {
+ public:
+  using OnAccept = std::function<void(std::weak_ptr<Session>)>;
+  using OnConnect = std::function<void(std::weak_ptr<Session>)>;
+
+  explicit Peer(uint16_t);
+
+  asio::any_io_executor getExecutor();
+  void run();
+  void stop();
+
+  void doAccept(OnAccept);
+  void closeAcceptor();
+
+  void doResolveAndConnect(const std::string&, uint16_t, OnConnect);
+  void clearSessions();
+
+ private:
+  std::shared_ptr<Session> createSession(tcp::socket);
+  boost::asio::io_context io_;
+  tcp::acceptor acceptor_;
+  tcp::resolver resolver_;
+  std::unordered_set<std::shared_ptr<Session>> sessions_;
+};
+}  // namespace net
