@@ -23,7 +23,8 @@ asio::awaitable<void> Session::sendTree(const fstree::DirectoryTree& tree) {
     std::vector<asio::const_buffer> buffers{
         asio::buffer(&size_be_, sizeof(size_be_)), asio::buffer(buffer_)};
 
-    co_await asio::async_write(socket_, buffers, asio::use_awaitable);
+    co_await asio::async_write(
+        socket_, buffers, asio::bind_executor(strand_, asio::use_awaitable));
   } catch (...) {
     busy_.store(false);
     close();
@@ -70,6 +71,9 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTree() {
 }
 
 void Session::close() {
+  if (!socket_.is_open())
+    return;
+
   boost::system::error_code ignored;
   socket_.close(ignored);
   if (on_close_)
