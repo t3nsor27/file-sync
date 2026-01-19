@@ -105,10 +105,11 @@ void Peer::doAccept(OnAccept on_accept) {
   acceptor_.async_accept(
       [self = shared_from_this(), on_accept = std::move(on_accept)](
           boost::system::error_code ec, tcp::socket socket) mutable {
-        if (ec)
-          return;
-        auto session = self->createSession(std::move(socket));
-        on_accept(std::weak_ptr<Session>(session));
+        if (!ec) {
+          auto session = self->createSession(std::move(socket));
+          on_accept(std::weak_ptr<Session>(session));
+        }
+        self->doAccept(on_accept);
       });
 }
 
