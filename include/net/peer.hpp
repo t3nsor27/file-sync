@@ -13,8 +13,10 @@
 namespace net {
 using boost::asio::ip::tcp;
 namespace asio = boost::asio;
+namespace fs = std::filesystem;
 
-constexpr uint64_t MAX_TREE_SIZE = 64 * 1024 * 1024;  // 64MB
+constexpr uint64_t MAX_TREE_SIZE = 64 * 1024 * 1024;        // 64MB
+constexpr uint32_t MAX_FILE_CHUNK_SIZE = 64 * 1024 * 1024;  // 64 MB
 
 class Session : public std::enable_shared_from_this<Session> {
  public:
@@ -24,6 +26,11 @@ class Session : public std::enable_shared_from_this<Session> {
 
   asio::awaitable<void> sendTree(const fstree::DirectoryTree&);
   asio::awaitable<fstree::DirectoryTree> receiveTree();
+
+  asio::awaitable<void> sendFile(const fstree::DirectoryTree&,
+                                 const fstree::Node&,
+                                 uint32_t chunk_size = MAX_FILE_CHUNK_SIZE);
+  asio::awaitable<void> receiveFile(fstree::DirectoryTree&);
   void close();
 
  private:

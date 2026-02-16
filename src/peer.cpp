@@ -1,5 +1,13 @@
 #include "../include/net/peer.hpp"
+#include <endian.h>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace net {
 Session::Session(tcp::socket socket, OnClose on_close)
@@ -68,6 +76,145 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTree() {
     close();
     throw;
   }
+}
+
+asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
+                                        const fstree::Node& node,
+                                        uint32_t chunk_size) {
+  // Ensure strand entry
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+
+  if (chunk_size == 0 || chunk_size > MAX_FILE_CHUNK_SIZE)
+    throw std::runtime_error("invalid chunk size");
+
+  // Resolve absolute path
+  fs::path file_path = tree.root_path / node.path;
+  auto file_size = std::get<fstree::FileMeta>(node.data).size;
+
+  std::ifstream file(file_path, std::ios::binary);
+  if (!file)
+    throw std::runtime_error("failed to open file");
+
+  // Send header
+  std::ostringstream header;
+  fstree::wire::write_string(header, node.path.generic_string());
+  fstree::wire::write_u64(header, file_size);
+
+  auto header_buf = header.str();
+  uint64_t header_size = header_buf.size();
+  uint64_t header_size_be = htobe64(header_size);
+
+  // --- Header Debug ---
+  // std::cout << "\nSend header ->"
+  //           << "\nSize: " << be64toh(header_size_be)
+  //           << "\nrel_path: " << node.path.generic_string()
+  //           << "\nfile_size: " << file_size << "\nBuffer: ";  // debug
+  // for (auto& v : header_buf) {
+  //   std::cout << (int)v << " ";
+  // }
+  // std::cout << "\n";
+
+  co_await asio::async_write(
+      socket_,
+      asio::buffer(&header_size_be, sizeof(header_size_be)),
+      asio::use_awaitable);
+
+  co_await asio::async_write(
+      socket_, asio::buffer(header_buf), asio::use_awaitable);
+
+  // Send chunk
+  std::vector<char> buffer(chunk_size);
+  uint64_t remaining = file_size;
+
+  while (remaining > 0) {
+    uint32_t to_read =
+        static_cast<uint32_t>(std::min<uint64_t>(remaining, chunk_size));
+
+    file.read(buffer.data(), to_read);
+    if (!file)
+      throw std::runtime_error("file read failed");
+
+    uint32_t be_size = htobe32(to_read);
+
+    co_await asio::async_write(
+        socket_, asio::buffer(&be_size, sizeof(be_size)), asio::use_awaitable);
+
+    co_await asio::async_write(
+        socket_, asio::buffer(buffer.data(), to_read), asio::use_awaitable);
+
+    remaining -= to_read;
+  }
+}
+
+asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree) {
+  // Ensure strand entry
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+
+  // Receive Header
+  uint64_t hdr_size_be = 0;
+  co_await asio::async_read(socket_,
+                            asio::buffer(&hdr_size_be, sizeof(hdr_size_be)),
+                            asio::use_awaitable);
+
+  uint64_t hdr_size = be64toh(hdr_size_be);
+  // std::cout << "Received header size: " << hdr_size << "\n";
+
+  if (hdr_size > MAX_FILE_CHUNK_SIZE)
+    throw std::runtime_error("header too large");
+
+  std::vector<uint8_t> hdr_buf(hdr_size);
+  co_await asio::async_read(
+      socket_, asio::buffer(hdr_buf), asio::use_awaitable);
+
+  std::istringstream hdr_stream(std::string(hdr_buf.begin(), hdr_buf.end()));
+
+  fs::path rel_path = fstree::wire::read_string(hdr_stream);
+  uint64_t file_size = fstree::wire::read_u64(hdr_stream);
+
+  // --- Header Debug ---
+  // std::cout << "\nReceive header ->"
+  //           << "\nSize: " << hdr_size << "\nrel_path: " << rel_path
+  //           << "\nfile_size: " << file_size << "\nBuffer: ";  // debug
+  // for (auto& v : hdr_buf) {
+  //   std::cout << (int)v << " ";
+  // }
+  // std::cout << "\n";  // debug
+
+  // Resolve path
+  fs::path abs_path = tree.root_path / rel_path;
+  fs::create_directories(abs_path.parent_path());
+
+  std::ofstream file(abs_path, std::ios::binary | std::ios::trunc);
+  if (!file)
+    throw std::runtime_error("failed to create file");
+
+  // Receive chunk
+  uint64_t received = 0;
+
+  while (received < file_size) {
+    uint32_t chunk_size_be = 0;
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(&chunk_size_be, sizeof(chunk_size_be)),
+        asio::use_awaitable);
+    uint32_t chunk_size = be32toh(chunk_size_be);
+
+    if (chunk_size > MAX_FILE_CHUNK_SIZE || chunk_size == 0)
+      throw std::runtime_error("chunk too large");
+
+    std::vector<char> buffer(chunk_size);
+    co_await asio::async_read(
+        socket_, asio::buffer(buffer), asio::use_awaitable);
+
+    file.write(buffer.data(), chunk_size);
+    if (!file)
+      throw std::runtime_error("file write failed");
+
+    received += chunk_size;
+  }
+
+  file.close();
+  tree = fstree::DirectoryTree(tree.root_path);
 }
 
 void Session::close() {
