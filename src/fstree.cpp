@@ -10,6 +10,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace fstree {
 
@@ -244,6 +245,27 @@ void printHash(const Hash& hash) {
     std::cout << std::setw(2) << static_cast<unsigned int>(v);
   }
   std::cout << std::dec;
+}
+
+void printDiff(const std::vector<NodeDiff>& diff) {
+  for (auto it = diff.begin(); it != diff.end(); it++) {
+    if (it->type == ChangeType::Added) {
+      std::cout << "Add "
+                << (it->new_node->type == NodeType::Directory ? "Directory: "
+                                                              : "File: ")
+                << it->new_node->path << "\n";
+    } else if (it->type == ChangeType::Deleted) {
+      std::cout << "Delete "
+                << (it->old_node->type == NodeType::Directory ? "Directory: "
+                                                              : "File: ")
+                << it->old_node->path << "\n";
+    } else {
+      std::cout << "Modified "
+                << (it->new_node->type == NodeType::Directory ? "Directory: "
+                                                              : "File: ")
+                << it->new_node->path << "\n";
+    }
+  }
 }
 
 void serializeNode(std::ostream& os, const Node& node) {

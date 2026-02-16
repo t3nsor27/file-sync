@@ -86,6 +86,7 @@ std::vector<NodeDiff> diffTree(DirectoryTree&, DirectoryTree&);
 
 void printTree(Node&, std::string prefix = "");
 void printHash(const Hash&);
+void printDiff(const std::vector<NodeDiff>&);
 
 void serializeNode(std::ostream&, const Node&);
 std::unique_ptr<Node> deserializeNode(std::istream&);
