@@ -77,6 +77,7 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTree() {
     close();
     throw;
   }
+  busy_.store(false);
 }
 
 asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
@@ -84,6 +85,11 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
                                         uint32_t chunk_size) {
   // Ensure strand entry
   co_await asio::dispatch(strand_, asio::use_awaitable);
+
+  // If busy, wait by yielding into strand
+  while (busy_.exchange(true)) {
+    co_await asio::post(strand_, asio::use_awaitable);
+  }
 
   if (chunk_size == 0 || chunk_size > MAX_FILE_CHUNK_SIZE)
     throw std::runtime_error("invalid chunk size");
@@ -145,11 +151,17 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
 
     remaining -= to_read;
   }
+  busy_.store(false);
 }
 
 asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree) {
   // Ensure strand entry
   co_await asio::dispatch(strand_, asio::use_awaitable);
+
+  // If busy, wait by yielding into strand
+  while (busy_.exchange(true)) {
+    co_await asio::post(strand_, asio::use_awaitable);
+  }
 
   // Receive Header
   uint64_t hdr_size_be = 0;
@@ -216,6 +228,7 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree) {
 
   file.close();
   tree = fstree::DirectoryTree(tree.root_path);
+  busy_.store(false);
 }
 
 void Session::close() {
