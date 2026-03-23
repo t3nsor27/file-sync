@@ -31,6 +31,8 @@ class Session : public std::enable_shared_from_this<Session> {
                                  const fstree::Node&,
                                  uint32_t chunk_size = MAX_FILE_CHUNK_SIZE);
   asio::awaitable<void> receiveFile(fstree::DirectoryTree&);
+  // Utlilities
+  tcp::socket& socket();
   void close();
 
  private:
@@ -61,7 +63,10 @@ class Peer : public std::enable_shared_from_this<Peer> {
   void doResolveAndConnect(const std::string&, uint16_t, OnConnect);
   void clearSessions();
 
+  uint64_t id();
+
  private:
+  uint64_t id_;
   std::shared_ptr<Session> createSession(tcp::socket);
   boost::asio::io_context io_;
   tcp::acceptor acceptor_;

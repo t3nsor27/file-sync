@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -227,8 +228,12 @@ void Session::close() {
     on_close_(shared_from_this());
 }
 
-Peer::Peer(uint16_t port) : io_(), acceptor_(io_), resolver_(io_) {
-  tcp::endpoint ep(tcp::v6(), port);
+Peer::Peer(uint16_t port)
+    : io_(),
+      acceptor_(io_),
+      resolver_(io_),
+      id_(std::mt19937_64{std::random_device{}()}()) {
+  tcp::endpoint ep(tcp::v4(), port);
 
   acceptor_.open(ep.protocol());
   // acceptor_.set_option(asio::ip::v6_only(false));
@@ -314,5 +319,9 @@ std::shared_ptr<Session> Peer::createSession(tcp::socket socket) {
       });
   sessions_.insert(session);
   return session;
+}
+
+uint64_t Peer::id() {
+  return id_;
 }
 }  // namespace net
