@@ -21,3 +21,6 @@ run: $(FILE).cpp
   -pthread -ldl -lcrypto -o ./misc/build/$(FILE)
 	@clear
 	@./misc/build/$(FILE)
+
+zip:
+	@zip -r ../file-sync.zip . -r --exclude "./.git/*" --exclude "./misc/*"
