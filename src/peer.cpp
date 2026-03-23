@@ -231,7 +231,7 @@ Peer::Peer(uint16_t port) : io_(), acceptor_(io_), resolver_(io_) {
   tcp::endpoint ep(tcp::v6(), port);
 
   acceptor_.open(ep.protocol());
-  acceptor_.set_option(asio::ip::v6_only(false));
+  // acceptor_.set_option(asio::ip::v6_only(false));
   acceptor_.set_option(tcp::acceptor::reuse_address(true));
   acceptor_.bind(ep);
   acceptor_.listen();
