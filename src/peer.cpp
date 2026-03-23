@@ -231,6 +231,96 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree) {
   busy_.store(false);
 }
 
+asio::awaitable<void> Session::sendHello(const HelloPacket& hello) {
+  // Ensure strand entry
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+
+  // If busy, wait by yielding into strand
+  while (busy_.exchange(true)) {
+    co_await asio::post(strand_, asio::use_awaitable);
+  }
+
+  try {
+    // Send header
+    std::ostringstream header;
+    fstree::wire::write_u64(header, hello.peer_id);
+    fstree::wire::write_string(header, hello.hostname);
+
+    auto header_buf = header.str();
+    uint64_t header_size = header_buf.size();
+    uint64_t header_size_be = htobe64(header_size);
+
+    // --- Header Debug ---
+    // std::cerr << "sendHello: header_size=" << header_size
+    //           << " peer_id=" << hello.peer_id << " hostname=" <<
+    //           hello.hostname
+    //           << "\n";
+    co_await asio::async_write(
+        socket_,
+        asio::buffer(&header_size_be, sizeof(header_size_be)),
+        asio::bind_executor(strand_, asio::use_awaitable));
+
+    co_await asio::async_write(
+        socket_,
+        asio::buffer(header_buf),
+        asio::bind_executor(strand_, asio::use_awaitable));
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+
+  busy_.store(false);
+}
+
+asio::awaitable<Session::HelloPacket> Session::receiveHello() {
+  // Ensure strand entry
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+
+  // If busy, wait by yielding into strand
+  while (busy_.exchange(true)) {
+    co_await asio::post(strand_, asio::use_awaitable);
+  }
+
+  try {
+    // Receive header
+    uint64_t header_size_be;
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(&header_size_be, sizeof(header_size_be)),
+        asio::bind_executor(strand_, asio::use_awaitable));
+    auto header_size = be64toh(header_size_be);
+    if (header_size > 1024)
+      throw std::runtime_error("hello packet too large");
+
+    // --- Header Debug ---
+    // std::cerr << "receiveHello: header_size=" << header_size << "\n";
+
+    std::vector<uint8_t> buffer(header_size);
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(buffer),
+        asio::bind_executor(strand_, asio::use_awaitable));
+
+    std::istringstream is(std::string(buffer.begin(), buffer.end()),
+                          std::ios::binary);
+    HelloPacket hello;
+    hello.peer_id = fstree::wire::read_u64(is);
+    hello.hostname = fstree::wire::read_string(is);
+
+    busy_.store(false);
+    co_return hello;
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+}
+
+tcp::socket& Session::socket() {
+  return socket_;
+}
+
 void Session::close() {
   if (!socket_.is_open())
     return;

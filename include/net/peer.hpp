@@ -20,10 +20,15 @@ constexpr uint32_t MAX_FILE_CHUNK_SIZE = 64 * 1024 * 1024;  // 64 MB
 
 class Session : public std::enable_shared_from_this<Session> {
  public:
+  struct HelloPacket {
+    uint64_t peer_id;
+    std::string hostname;
+  };
   using OnClose = std::function<void(std::shared_ptr<Session>)>;
 
   explicit Session(tcp::socket, OnClose);
 
+  // Traffic
   asio::awaitable<void> sendTree(const fstree::DirectoryTree&);
   asio::awaitable<fstree::DirectoryTree> receiveTree();
 
@@ -31,6 +36,9 @@ class Session : public std::enable_shared_from_this<Session> {
                                  const fstree::Node&,
                                  uint32_t chunk_size = MAX_FILE_CHUNK_SIZE);
   asio::awaitable<void> receiveFile(fstree::DirectoryTree&);
+  asio::awaitable<void> sendHello(const HelloPacket&);
+  asio::awaitable<HelloPacket> receiveHello();
+
   // Utlilities
   tcp::socket& socket();
   void close();
