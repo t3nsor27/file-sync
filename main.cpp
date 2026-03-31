@@ -1,5 +1,6 @@
 #include <boost/asio.hpp>
 #include <cstdint>
+#include <filesystem>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -7,7 +8,9 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+#include "./include/fstree/fstree.hpp"
 #include "./include/net/peer.hpp"
 
 namespace asio = boost::asio;
@@ -35,6 +38,7 @@ struct PeerInfo {
   uint64_t peer_id;
   asio::ip::address address;
   uint16_t port;
+  std::shared_ptr<fstree::DirectoryTree> tree;
   std::weak_ptr<net::Session> session;
 };
 
@@ -54,10 +58,11 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
   return info;
 }
 
+// TODO: Implement table diff-view
 int main(int argc, char* argv[]) {
   using namespace ftxui;
 
-  if (argc != 2) {
+  if (argc != 3) {
     return 0;
   }
 
@@ -65,14 +70,22 @@ int main(int argc, char* argv[]) {
   auto bg_color = Color::Palette256(16);
 
   auto [hostname, ip_addr] = GetHostInfo();
-
   std::string ip = ip_addr.to_string();
   std::string peer_ip, peer_port, peer_timeout;
   std::mutex peer_mutex;
   std::vector<PeerInfo> peer_list;
   uint16_t port = std::stoi(argv[1]);
   auto peer = std::make_shared<net::Peer>(port);
-  PeerInfo local_peer{hostname, peer->id(), ip_addr, port};
+  PeerInfo local_peer{
+      hostname,
+      peer->id(),
+      ip_addr,
+      port,
+      std::make_shared<fstree::DirectoryTree>(
+          fstree::DirectoryTree(std::filesystem::path(argv[2])))};
+
+  // NOTE: Use this string for debugging
+  std::string debug_str;
 
   // -------------------------------------------------------------------------------------------------
   // ACCEPT LOOP
@@ -86,6 +99,19 @@ int main(int argc, char* argv[]) {
             co_await session->sendHello({peer->id(), hostname});
             auto hello = co_await session->receiveHello();
             auto info = ExtractPeerInfo(session, hello);
+
+            co_await session->sendTree(*local_peer.tree);
+            info.tree = std::make_shared<fstree::DirectoryTree>(
+                co_await session->receiveTree());
+
+            // ---- TREE EXCHANGE DEBUG ----
+            // auto node_diffs = fstree::diffTree(*local_peer.tree, *info.tree);
+            // std::ofstream accept_file("./misc/accept_debug");
+            // auto* old_buf = std::cout.rdbuf(accept_file.rdbuf());
+            // fstree::printTree(*(info.tree->root.get()));
+            // fstree::printDiff(node_diffs);
+            // std::cout.rdbuf(old_buf);
+
             {
               std::lock_guard<std::mutex> lock(peer_mutex);
               peer_list.push_back(std::move(info));
@@ -166,6 +192,21 @@ int main(int argc, char* argv[]) {
                           auto hello = co_await session->receiveHello();
                           co_await session->sendHello({peer->id(), hostname});
                           auto info = ExtractPeerInfo(session, hello);
+
+                          info.tree = std::make_shared<fstree::DirectoryTree>(
+                              co_await session->receiveTree());
+                          co_await session->sendTree(*local_peer.tree);
+
+                          // ---- TREE EXCHANGE DEBUG ----
+                          // auto node_diffs =
+                          //     fstree::diffTree(*local_peer.tree, *info.tree);
+                          // std::ofstream resolve_file("./misc/resolve_debug");
+                          // auto* old_buf =
+                          // std::cout.rdbuf(resolve_file.rdbuf());
+                          // fstree::printTree(*(info.tree->root.get()));
+                          // fstree::printDiff(node_diffs);
+                          // std::cout.rdbuf(old_buf);
+
                           {
                             std::lock_guard<std::mutex> lock(peer_mutex);
                             peer_list.push_back(std::move(info));
@@ -292,7 +333,8 @@ int main(int argc, char* argv[]) {
           text("Port is: " + peer_port),
           text("Timeout is: " + peer_timeout),
           text("Selected_peer: " +
-              std::to_string(selected_peer))}) | flex | border;
+              std::to_string(selected_peer)),
+          text("Debug: " + debug_str)}) | flex | border | frame;
         })
     }) | flex
   }) | bgcolor(bg_color);

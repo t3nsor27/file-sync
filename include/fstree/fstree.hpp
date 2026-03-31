@@ -84,6 +84,7 @@ struct NodeDiff {
 
 std::vector<NodeDiff> diffTree(DirectoryTree&, DirectoryTree&);
 
+// TODO: Instead of printing return a std::string
 void printTree(Node&, std::string prefix = "");
 void printHash(const Hash&);
 void printDiff(const std::vector<NodeDiff>&);
