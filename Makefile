@@ -8,7 +8,7 @@ build: $(FILE).cpp
 	./src/peer.cpp \
 	./src/wire.cpp \
   -lftxui-component -lftxui-dom -lftxui-screen \
-  -pthread -ldl -lcrypto -o ./misc/build/$(FILE)
+  -pthread -ldl -lcrypto -o ./misc/build/$(notdir $(FILE))
 	@echo "Done"
 
 run: $(FILE).cpp
@@ -18,7 +18,7 @@ run: $(FILE).cpp
 	./src/peer.cpp \
 	./src/wire.cpp \
   -lftxui-component -lftxui-dom -lftxui-screen \
-  -pthread -ldl -lcrypto -o ./misc/build/$(FILE)
+  -pthread -ldl -lcrypto -o ./misc/build/$(notdir $(FILE))
 	@clear
 	@./misc/build/$(FILE)
 
