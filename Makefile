@@ -19,8 +19,7 @@ run: $(FILE).cpp
 	./src/wire.cpp \
   -lftxui-component -lftxui-dom -lftxui-screen \
   -pthread -ldl -lcrypto -o ./misc/build/$(notdir $(FILE))
-	@clear
-	@./misc/build/$(FILE)
+	@./misc/build/$(notdir $(FILE))
 
 zip:
 	@zip -r ../file-sync.zip . -r --exclude "./.git/*" --exclude "./misc/*"

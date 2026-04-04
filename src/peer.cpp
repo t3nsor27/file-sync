@@ -80,6 +80,63 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTree() {
   busy_.store(false);
 }
 
+asio::awaitable<void> Session::sendTaggedTree(
+    const fstree::DirectoryTree& tree) {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+
+  try {
+    buffer_ = fstree::serializeTree(tree);
+    size_be_ = htobe64(buffer_.size());
+
+    uint8_t tag = static_cast<uint8_t>(PacketType::Tree);
+
+    std::vector<asio::const_buffer> buffers{
+        asio::buffer(&tag, 1),
+        asio::buffer(&size_be_, sizeof(size_be_)),
+        asio::buffer(buffer_)};
+
+    co_await asio::async_write(
+        socket_, buffers, asio::bind_executor(strand_, asio::use_awaitable));
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+}
+
+asio::awaitable<fstree::DirectoryTree> Session::receiveTreePayload() {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+
+  try {
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(&size_be_, sizeof(size_be_)),
+        asio::bind_executor(strand_, asio::use_awaitable));
+
+    auto size = be64toh(size_be_);
+    if (size > MAX_TREE_SIZE)
+      throw std::runtime_error("Tree payload too large.\n");
+    buffer_.resize(size);
+
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(buffer_),
+        asio::bind_executor(strand_, asio::use_awaitable));
+
+    busy_.store(false);
+    co_return fstree::deserializeTree(buffer_);
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+}
+
 asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
                                         const fstree::Node& node,
                                         uint32_t chunk_size) {
@@ -310,6 +367,50 @@ asio::awaitable<Session::HelloPacket> Session::receiveHello() {
 
     busy_.store(false);
     co_return hello;
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+}
+
+asio::awaitable<void> Session::sendPacketType(PacketType pt) {
+  uint8_t tag = static_cast<uint8_t>(pt);
+  co_await asio::async_write(socket_,
+                             asio::buffer(&tag, 1),
+                             asio::bind_executor(strand_, asio::use_awaitable));
+}
+
+asio::awaitable<Session::PacketType> Session::receivePacketType() {
+  uint8_t tag = 0;
+  co_await asio::async_read(socket_,
+                            asio::buffer(&tag, 1),
+                            asio::bind_executor(strand_, asio::use_awaitable));
+  co_return static_cast<PacketType>(tag);
+}
+
+asio::awaitable<void> Session::sendTreeRequest() {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    co_await sendPacketType(PacketType::TreeRequest);
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+}
+
+asio::awaitable<bool> Session::receiveTreeRequest() {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    auto pt = co_await receivePacketType();
+    busy_.store(false);
+    co_return (pt == PacketType::TreeRequest);
   } catch (...) {
     busy_.store(false);
     close();

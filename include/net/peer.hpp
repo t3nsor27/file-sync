@@ -29,8 +29,12 @@ class Session : public std::enable_shared_from_this<Session> {
   explicit Session(tcp::socket, OnClose);
 
   // Traffic
-  asio::awaitable<void> sendTree(const fstree::DirectoryTree&);
-  asio::awaitable<fstree::DirectoryTree> receiveTree();
+  asio::awaitable<void> sendTree(
+      const fstree::DirectoryTree&);  // handshake: no tag prefix
+  asio::awaitable<void> sendTaggedTree(
+      const fstree::DirectoryTree&);  // post-handshake: Tree tag + payload
+  asio::awaitable<fstree::DirectoryTree> receiveTree();  // handshake: no tag
+  asio::awaitable<fstree::DirectoryTree> receiveTreePayload();
 
   asio::awaitable<void> sendFile(const fstree::DirectoryTree&,
                                  const fstree::Node&,
@@ -38,6 +42,20 @@ class Session : public std::enable_shared_from_this<Session> {
   asio::awaitable<void> receiveFile(fstree::DirectoryTree&);
   asio::awaitable<void> sendHello(const HelloPacket&);
   asio::awaitable<HelloPacket> receiveHello();
+
+  // Packet type tag sent before each message after handshake
+  enum class PacketType : uint8_t {
+    Tree = 0x01,
+    TreeRequest = 0x02,
+  };
+
+  asio::awaitable<void> sendPacketType(PacketType);
+  asio::awaitable<PacketType> receivePacketType();
+
+  // Request the remote side to re-send its tree (refresh)
+  asio::awaitable<void> sendTreeRequest();
+  // Returns true when a TreeRequest arrived (caller should send back its tree)
+  asio::awaitable<bool> receiveTreeRequest();
 
   // Utlilities
   tcp::socket& socket();

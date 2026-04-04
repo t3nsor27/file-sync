@@ -58,7 +58,7 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
   return info;
 }
 
-// TODO: Implement table diff-view
+// TODO: implement send and recv diff-ed files
 int main(int argc, char* argv[]) {
   using namespace ftxui;
 
@@ -87,6 +87,9 @@ int main(int argc, char* argv[]) {
   // NOTE: Use this string for debugging
   std::string debug_str;
 
+  std::function<void(std::size_t, std::shared_ptr<net::Session>)>
+      start_refresh_listener;  // Forward declaration
+
   // -------------------------------------------------------------------------------------------------
   // ACCEPT LOOP
   // -------------------------------------------------------------------------------------------------
@@ -104,19 +107,12 @@ int main(int argc, char* argv[]) {
             info.tree = std::make_shared<fstree::DirectoryTree>(
                 co_await session->receiveTree());
 
-            // ---- TREE EXCHANGE DEBUG ----
-            // auto node_diffs = fstree::diffTree(*local_peer.tree, *info.tree);
-            // std::ofstream accept_file("./misc/accept_debug");
-            // auto* old_buf = std::cout.rdbuf(accept_file.rdbuf());
-            // fstree::printTree(*(info.tree->root.get()));
-            // fstree::printDiff(node_diffs);
-            // std::cout.rdbuf(old_buf);
-
             {
               std::lock_guard<std::mutex> lock(peer_mutex);
               peer_list.push_back(std::move(info));
             }
 
+            start_refresh_listener(peer_list.size() - 1, session);
             screen.PostEvent(Event::Custom);
           },
           asio::detached);
@@ -197,21 +193,12 @@ int main(int argc, char* argv[]) {
                               co_await session->receiveTree());
                           co_await session->sendTree(*local_peer.tree);
 
-                          // ---- TREE EXCHANGE DEBUG ----
-                          // auto node_diffs =
-                          //     fstree::diffTree(*local_peer.tree, *info.tree);
-                          // std::ofstream resolve_file("./misc/resolve_debug");
-                          // auto* old_buf =
-                          // std::cout.rdbuf(resolve_file.rdbuf());
-                          // fstree::printTree(*(info.tree->root.get()));
-                          // fstree::printDiff(node_diffs);
-                          // std::cout.rdbuf(old_buf);
-
                           {
                             std::lock_guard<std::mutex> lock(peer_mutex);
                             peer_list.push_back(std::move(info));
                           }
 
+                          start_refresh_listener(peer_list.size() - 1, session);
                           screen.PostEvent(Event::Custom);
                         },
                         asio::detached);
@@ -315,6 +302,213 @@ int main(int argc, char* argv[]) {
            borderLight;
   });
 
+  // NOTE:: Change Design of Diff - view
+
+  // -------------------------------------------------------------------------------------------------
+  // DIFF VIEW
+  // -------------------------------------------------------------------------------------------------
+
+  // ---- Helpers ----
+
+  auto fmt_size = [](uint64_t sz) -> std::string {
+    if (sz < 1024)
+      return std::to_string(sz) + " B";
+    if (sz < 1024 * 1024)
+      return std::to_string(sz / 1024) + " KB";
+    return std::to_string(sz / (1024 * 1024)) + " MB";
+  };
+
+  auto diff_row = [&](const fstree::NodeDiff& d) -> Element {
+    std::string tag, path_str;
+    Color tag_color = Color::White;
+
+    if (d.type == fstree::ChangeType::Added) {
+      tag = " + ";
+      tag_color = Color::Green;
+      path_str = d.new_node->path.generic_string();
+    } else if (d.type == fstree::ChangeType::Deleted) {
+      tag = " - ";
+      tag_color = Color::Red;
+      path_str = d.old_node->path.generic_string();
+    } else {
+      tag = " ~ ";
+      tag_color = Color::Yellow;
+      path_str = d.new_node->path.generic_string();
+    }
+
+    std::string size_str;
+    if (d.type == fstree::ChangeType::Added &&
+        d.new_node->type == fstree::NodeType::File)
+      size_str = fmt_size(d.new_node->size);
+    else if (d.type == fstree::ChangeType::Deleted &&
+             d.old_node->type == fstree::NodeType::File)
+      size_str = fmt_size(d.old_node->size);
+    else if (d.type == fstree::ChangeType::Modified)
+      size_str =
+          fmt_size(d.old_node->size) + " -> " + fmt_size(d.new_node->size);
+
+    return hbox({
+        text(tag) | color(tag_color) | bold,
+        text(path_str) | flex,
+        text(size_str) | color(Color::GrayDark),
+    });
+  };
+
+  auto refresh_button = Button({
+      .label = "REFRESH",
+      .on_click =
+          [&]() {
+            std::shared_ptr<net::Session> session;
+            {
+              std::lock_guard<std::mutex> lock(peer_mutex);
+              if (peer_list.empty() ||
+                  selected_peer >= static_cast<int>(peer_list.size()))
+                return;
+              session = peer_list[selected_peer].session.lock();
+              if (!session)
+                return;
+            }
+
+            asio::co_spawn(
+                peer->getExecutor(),
+                [&, session]() -> asio::awaitable<void> {
+                  co_await session->sendTreeRequest();
+                  co_await session->sendTaggedTree(*local_peer.tree);
+                },
+                asio::detached);
+          },
+      .transform =
+          [](EntryState state) {
+            auto btn = text(" Refresh ") | center;
+            return state.focused ? btn | borderDouble : btn | borderLight;
+          },
+  });
+
+  // ---- Diff renderer ----
+  auto diff_renderer = Renderer(refresh_button, [&]() -> Element {
+    std::string peer_name;
+    std::vector<fstree::NodeDiff> diffs;
+    bool has_peer = false;
+    bool has_tree = false;
+
+    {
+      std::lock_guard<std::mutex> lock(peer_mutex);
+      has_peer = !peer_list.empty() &&
+                 selected_peer < static_cast<int>(peer_list.size());
+      if (has_peer) {
+        peer_name = peer_list[selected_peer].name + "  (" +
+                    peer_list[selected_peer].address.to_string() + ":" +
+                    std::to_string(peer_list[selected_peer].port) + ")";
+        has_tree = peer_list[selected_peer].tree != nullptr;
+        if (has_tree)
+          diffs = fstree::diffTree(*local_peer.tree,
+                                   *peer_list[selected_peer].tree);
+      }
+    }
+
+    // -- Header row --
+    Element header = hbox({
+        text(" DIFF  ") | bold | dim,
+        separatorLight(),
+        text("  "),
+        has_peer ? (text(peer_name) | color(Color::Cyan))
+                 : (text("select a peer") | dim),
+        filler(),
+        refresh_button->Render(),
+        text(" "),
+    });
+
+    // -- Body --
+    Elements rows;
+    if (!has_peer) {
+      rows.push_back(text("  No peer selected.") | dim | center);
+    } else if (!has_tree) {
+      rows.push_back(text("  Waiting for tree from peer...") | dim | center);
+    } else if (diffs.empty()) {
+      rows.push_back(separatorLight());
+      rows.push_back(text("  Trees are identical.") | color(Color::Green) |
+                     center);
+    } else {
+      int added = 0, deleted = 0, modified = 0;
+      for (auto& d : diffs) {
+        if (d.type == fstree::ChangeType::Added)
+          ++added;
+        else if (d.type == fstree::ChangeType::Deleted)
+          ++deleted;
+        else
+          ++modified;
+      }
+
+      rows.push_back(separatorLight());
+      rows.push_back(hbox({
+          text("  "),
+          text("+" + std::to_string(added)) | color(Color::Green) | bold,
+          text("  "),
+          text("-" + std::to_string(deleted)) | color(Color::Red) | bold,
+          text("  "),
+          text("~" + std::to_string(modified)) | color(Color::Yellow) | bold,
+          text("  changes") | dim,
+      }));
+      rows.push_back(separatorLight());
+
+      for (auto& d : diffs)
+        rows.push_back(diff_row(d));
+    }
+
+    return vbox({
+               header,
+               vbox(std::move(rows)) | frame | flex,
+           }) |
+           flex | borderLight;
+  });
+
+  start_refresh_listener = [&](std::size_t peer_idx,
+                               std::shared_ptr<net::Session> session) {
+    asio::co_spawn(
+        peer->getExecutor(),
+        [&, peer_idx, session]() -> asio::awaitable<void> {
+          try {
+            while (true) {
+              auto pkt = co_await session->receivePacketType();
+
+              if (pkt == net::Session::PacketType::TreeRequest) {
+                auto pt2 = co_await session->receivePacketType();
+                if (pt2 != net::Session::PacketType::Tree)
+                  break;
+                auto new_tree = co_await session->receiveTreePayload();
+
+                co_await session->sendTaggedTree(*local_peer.tree);
+
+                {
+                  std::lock_guard<std::mutex> lock(peer_mutex);
+                  if (peer_idx < peer_list.size())
+                    peer_list[peer_idx].tree =
+                        std::make_shared<fstree::DirectoryTree>(
+                            std::move(new_tree));
+                }
+                screen.PostEvent(Event::Custom);
+
+              } else if (pkt == net::Session::PacketType::Tree) {
+                auto new_tree = co_await session->receiveTreePayload();
+
+                {
+                  std::lock_guard<std::mutex> lock(peer_mutex);
+                  if (peer_idx < peer_list.size())
+                    peer_list[peer_idx].tree =
+                        std::make_shared<fstree::DirectoryTree>(
+                            std::move(new_tree));
+                }
+                screen.PostEvent(Event::Custom);
+              }
+              // Unknown tags are silently skipped — forward-compatible
+            }
+          } catch (...) {
+            // Session closed or I/O error — exit listener cleanly
+          }
+        },
+        asio::detached);
+  };
+
   // -------------------------------------------------------------------------------------------------
   // MAIN UI
   // -------------------------------------------------------------------------------------------------
@@ -324,18 +518,10 @@ int main(int argc, char* argv[]) {
     status_bar_renderer,
     Container::Horizontal({
       Container::Vertical({
-        peer_renderer, 
+        peer_renderer,
         connected_peer_renderer | flex
-      }) | size(WIDTH, GREATER_THAN, 30),
-        Renderer([&]() {
-          return vbox({
-          text("IP is: " + peer_ip),
-          text("Port is: " + peer_port),
-          text("Timeout is: " + peer_timeout),
-          text("Selected_peer: " +
-              std::to_string(selected_peer)),
-          text("Debug: " + debug_str)}) | flex | border | frame;
-        })
+      }) | size(WIDTH, GREATER_THAN, 32),
+      diff_renderer | flex,
     }) | flex
   }) | bgcolor(bg_color);
   // clang-format on
