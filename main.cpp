@@ -408,11 +408,12 @@ int main(int argc, char* argv[]) {
 
     // -- Header row --
     Element header = hbox({
-        text(" DIFF  ") | bold | dim,
+        text(" DIFF  ") | bold | dim | center,
         separatorLight(),
         text("  "),
-        has_peer ? (text(peer_name) | color(Color::Cyan))
-                 : (text("select a peer") | dim),
+        (has_peer ? (text(peer_name) | color(Color::Cyan))
+                  : (text("select a peer") | dim)) |
+            center,
         filler(),
         refresh_button->Render(),
         text(" "),
@@ -420,12 +421,12 @@ int main(int argc, char* argv[]) {
 
     // -- Body --
     Elements rows;
+    rows.push_back(separatorLight());
     if (!has_peer) {
       rows.push_back(text("  No peer selected.") | dim | center);
     } else if (!has_tree) {
       rows.push_back(text("  Waiting for tree from peer...") | dim | center);
     } else if (diffs.empty()) {
-      rows.push_back(separatorLight());
       rows.push_back(text("  Trees are identical.") | color(Color::Green) |
                      center);
     } else {
@@ -439,7 +440,6 @@ int main(int argc, char* argv[]) {
           ++modified;
       }
 
-      rows.push_back(separatorLight());
       rows.push_back(hbox({
           text("  "),
           text("+" + std::to_string(added)) | color(Color::Green) | bold,
