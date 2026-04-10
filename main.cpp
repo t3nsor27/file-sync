@@ -58,7 +58,11 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
   return info;
 }
 
-// TODO: implement send and recv diff-ed files
+// FIX: Syncing new directories whether empty or filled doesn't work
+// TODO: Mutual disconnect Peer
+// TODO: IP and PORT input validation (avoid duplicate peers)
+// TODO: Separate sync_state for each peer
+// TODO: implement the timeout feature
 int main(int argc, char* argv[]) {
   using namespace ftxui;
 
@@ -86,6 +90,17 @@ int main(int argc, char* argv[]) {
 
   // NOTE: Use this string for debugging
   std::string debug_str;
+
+  // -------------------------------------------------------------------------------------------------
+  // SYNC STATE  (written from IO thread, read by UI thread)
+  // -------------------------------------------------------------------------------------------------
+  struct SyncState {
+    enum class Phase { Idle, SyncingTrees, SyncingFiles, Done, Error };
+    std::atomic<Phase> phase{Phase::Idle};
+    std::atomic<int> files_done{0};
+    std::atomic<int> files_total{0};
+  };
+  SyncState sync_state;
 
   std::function<void(std::size_t, std::shared_ptr<net::Session>)>
       start_refresh_listener;  // Forward declaration
@@ -354,10 +369,14 @@ int main(int argc, char* argv[]) {
     });
   };
 
+  // ---- Refresh button ----
   auto refresh_button = Button({
       .label = "REFRESH",
       .on_click =
           [&]() {
+            local_peer.tree = std::make_shared<fstree::DirectoryTree>(
+                local_peer.tree->root_path);
+            sync_state.phase.store(SyncState::Phase::Idle);
             std::shared_ptr<net::Session> session;
             {
               std::lock_guard<std::mutex> lock(peer_mutex);
@@ -368,7 +387,6 @@ int main(int argc, char* argv[]) {
               if (!session)
                 return;
             }
-
             asio::co_spawn(
                 peer->getExecutor(),
                 [&, session]() -> asio::awaitable<void> {
@@ -384,83 +402,196 @@ int main(int argc, char* argv[]) {
           },
   });
 
-  // ---- Diff renderer ----
-  auto diff_renderer = Renderer(refresh_button, [&]() -> Element {
-    std::string peer_name;
-    std::vector<fstree::NodeDiff> diffs;
-    bool has_peer = false;
-    bool has_tree = false;
+  // ---- Sync button ----
+  // Sends SyncRequest + our tree. The listener on the remote side handles it:
+  // it computes the diff (from the requester's perspective), streams files /
+  // delete notices, then sends SyncDone. Our listener receives all of that and
+  // updates sync_state as it goes, posting events so the UI re-renders.
+  auto sync_button = Button({
+      .label = "SYNC",
+      .on_click =
+          [&]() {
+            using Phase = SyncState::Phase;
+            auto ph = sync_state.phase.load();
+            if (ph == Phase::SyncingTrees || ph == Phase::SyncingFiles)
+              return;
 
-    {
-      std::lock_guard<std::mutex> lock(peer_mutex);
-      has_peer = !peer_list.empty() &&
-                 selected_peer < static_cast<int>(peer_list.size());
-      if (has_peer) {
-        peer_name = peer_list[selected_peer].name + "  (" +
-                    peer_list[selected_peer].address.to_string() + ":" +
-                    std::to_string(peer_list[selected_peer].port) + ")";
-        has_tree = peer_list[selected_peer].tree != nullptr;
-        if (has_tree)
-          diffs = fstree::diffTree(*local_peer.tree,
-                                   *peer_list[selected_peer].tree);
-      }
-    }
+            std::shared_ptr<net::Session> session;
+            {
+              std::lock_guard<std::mutex> lock(peer_mutex);
+              if (peer_list.empty() ||
+                  selected_peer >= static_cast<int>(peer_list.size()))
+                return;
+              session = peer_list[selected_peer].session.lock();
+              if (!session)
+                return;
+            }
 
-    // -- Header row --
-    Element header = hbox({
-        text(" DIFF  ") | bold | dim | center,
-        separatorLight(),
-        text("  "),
-        (has_peer ? (text(peer_name) | color(Color::Cyan))
-                  : (text("select a peer") | dim)) |
-            center,
-        filler(),
-        refresh_button->Render(),
-        text(" "),
-    });
+            sync_state.phase.store(Phase::SyncingTrees);
+            sync_state.files_done.store(0);
+            sync_state.files_total.store(0);
+            screen.PostEvent(Event::Custom);
 
-    // -- Body --
-    Elements rows;
-    rows.push_back(separatorLight());
-    if (!has_peer) {
-      rows.push_back(text("  No peer selected.") | dim | center);
-    } else if (!has_tree) {
-      rows.push_back(text("  Waiting for tree from peer...") | dim | center);
-    } else if (diffs.empty()) {
-      rows.push_back(text("  Trees are identical.") | color(Color::Green) |
-                     center);
-    } else {
-      int added = 0, deleted = 0, modified = 0;
-      for (auto& d : diffs) {
-        if (d.type == fstree::ChangeType::Added)
-          ++added;
-        else if (d.type == fstree::ChangeType::Deleted)
-          ++deleted;
-        else
-          ++modified;
-      }
-
-      rows.push_back(hbox({
-          text("  "),
-          text("+" + std::to_string(added)) | color(Color::Green) | bold,
-          text("  "),
-          text("-" + std::to_string(deleted)) | color(Color::Red) | bold,
-          text("  "),
-          text("~" + std::to_string(modified)) | color(Color::Yellow) | bold,
-          text("  changes") | dim,
-      }));
-      rows.push_back(separatorLight());
-
-      for (auto& d : diffs)
-        rows.push_back(diff_row(d));
-    }
-
-    return vbox({
-               header,
-               vbox(std::move(rows)) | frame | flex,
-           }) |
-           flex | borderLight;
+            asio::co_spawn(
+                peer->getExecutor(),
+                [&, session]() -> asio::awaitable<void> {
+                  // Send SyncRequest tag + our current tree.
+                  // The remote listener will:
+                  //   1. receive our tree
+                  //   2. compute diffs (what WE are missing)
+                  //   3. stream FileData / DeleteFile packets
+                  //   4. send SyncDone
+                  // Our listener picks all of that up and updates sync_state.
+                  try {
+                    co_await session->sendPacketType(
+                        net::Session::PacketType::SyncRequest);
+                    co_await session->sendTaggedTree(*local_peer.tree);
+                  } catch (...) {
+                    sync_state.phase.store(Phase::Error);
+                    screen.PostEvent(Event::Custom);
+                  }
+                },
+                asio::detached);
+          },
+      .transform =
+          [&](EntryState state) {
+            using Phase = SyncState::Phase;
+            auto ph = sync_state.phase.load();
+            bool busy = ph == Phase::SyncingTrees || ph == Phase::SyncingFiles;
+            auto btn = text(busy ? " Syncing... " : " Sync ") | center;
+            if (busy)
+              return btn | borderLight | dim;
+            return state.focused ? btn | borderDouble : btn | borderLight;
+          },
   });
+
+  // ---- Diff renderer ----
+  auto diff_renderer = Renderer(
+      Container::Horizontal({refresh_button, sync_button}), [&]() -> Element {
+        std::string peer_name;
+        std::vector<fstree::NodeDiff> diffs;
+        bool has_peer = false;
+        bool has_tree = false;
+
+        {
+          std::lock_guard<std::mutex> lock(peer_mutex);
+          has_peer = !peer_list.empty() &&
+                     selected_peer < static_cast<int>(peer_list.size());
+          if (has_peer) {
+            peer_name = peer_list[selected_peer].name + "  (" +
+                        peer_list[selected_peer].address.to_string() + ":" +
+                        std::to_string(peer_list[selected_peer].port) + ")";
+            has_tree = peer_list[selected_peer].tree != nullptr;
+            if (has_tree)
+              diffs = fstree::diffTree(*local_peer.tree,
+                                       *peer_list[selected_peer].tree);
+          }
+        }
+
+        // -- Header row --
+        Element header = hbox({
+            text(" DIFF  ") | bold | dim,
+            separatorLight(),
+            text("  "),
+            has_peer ? (text(peer_name) | color(Color::Cyan))
+                     : (text("select a peer") | dim),
+            filler(),
+            refresh_button->Render(),
+            text(" "),
+            sync_button->Render(),
+            text(" "),
+        });
+
+        // -- Progress bar (shown while syncing) --
+        using Phase = SyncState::Phase;
+        auto phase = sync_state.phase.load();
+        int f_done = sync_state.files_done.load();
+        int f_total = sync_state.files_total.load();
+
+        Elements progress_row;
+        if (phase == Phase::SyncingTrees || phase == Phase::SyncingFiles ||
+            phase == Phase::Done || phase == Phase::Error) {
+          std::string status_text;
+          float bar_fraction = 0.0f;
+          Color status_color = Color::White;
+
+          if (phase == Phase::SyncingTrees) {
+            status_text = "STATUS: SYNCING TREES";
+            bar_fraction = 0.0f;
+            status_color = Color::Yellow;
+          } else if (phase == Phase::SyncingFiles) {
+            int total = f_total > 0 ? f_total : 1;
+            status_text = "STATUS: SYNCING FILES [" + std::to_string(f_done) +
+                          "/" + std::to_string(f_total) + "]";
+            bar_fraction = static_cast<float>(f_done) / total;
+            status_color = Color::Cyan;
+          } else if (phase == Phase::Done) {
+            status_text = "STATUS: SYNC COMPLETE";
+            bar_fraction = 1.0f;
+            status_color = Color::Green;
+          } else {
+            status_text = "STATUS: SYNC ERROR";
+            bar_fraction = 0.0f;
+            status_color = Color::Red;
+          }
+
+          progress_row.push_back(separatorLight());
+          progress_row.push_back(hbox({
+              text("  "),
+              text(status_text) | color(status_color) | bold,
+              text("  "),
+              gauge(bar_fraction) | flex | color(status_color),
+              text("  "),
+          }));
+        }
+
+        // -- Diff body --
+        Elements rows;
+        rows.push_back(separatorLight());
+        if (!has_peer) {
+          rows.push_back(text("  No peer selected.") | dim | center);
+        } else if (!has_tree) {
+          rows.push_back(text("  Waiting for tree from peer...") | dim |
+                         center);
+        } else if (diffs.empty()) {
+          rows.push_back(text("  Trees are identical.") | color(Color::Green) |
+                         center);
+        } else {
+          int added = 0, deleted = 0, modified = 0;
+          for (auto& d : diffs) {
+            if (d.type == fstree::ChangeType::Added)
+              ++added;
+            else if (d.type == fstree::ChangeType::Deleted)
+              ++deleted;
+            else
+              ++modified;
+          }
+          rows.push_back(hbox({
+              text("  "),
+              text("+" + std::to_string(added)) | color(Color::Green) | bold,
+              text("  "),
+              text("-" + std::to_string(deleted)) | color(Color::Red) | bold,
+              text("  "),
+              text("~" + std::to_string(modified)) | color(Color::Yellow) |
+                  bold,
+              text("  changes") | dim,
+          }));
+          rows.push_back(separatorLight());
+          for (auto& d : diffs)
+            rows.push_back(diff_row(d));
+        }
+
+        return vbox({
+                   header,
+                   vbox(std::move(progress_row)),
+                   vbox(std::move(rows)) | frame | flex,
+               }) |
+               flex | borderLight;
+      });
+
+  // -------------------------------------------------------------------------------------------------
+  // LISTENER  (sole reader on each session post-handshake)
+  // -------------------------------------------------------------------------------------------------
 
   start_refresh_listener = [&](std::size_t peer_idx,
                                std::shared_ptr<net::Session> session) {
@@ -471,12 +602,14 @@ int main(int argc, char* argv[]) {
             while (true) {
               auto pkt = co_await session->receivePacketType();
 
+              // ---- TreeRequest: plain refresh (tree exchange only) ----
               if (pkt == net::Session::PacketType::TreeRequest) {
+                // Requester sends: TreeRequest | Tree tag + payload (their
+                // tree) We reply with: Tree tag + payload (our tree)
                 auto pt2 = co_await session->receivePacketType();
                 if (pt2 != net::Session::PacketType::Tree)
                   break;
                 auto new_tree = co_await session->receiveTreePayload();
-
                 co_await session->sendTaggedTree(*local_peer.tree);
 
                 {
@@ -488,9 +621,9 @@ int main(int argc, char* argv[]) {
                 }
                 screen.PostEvent(Event::Custom);
 
+                // ---- Tree: unsolicited push ----
               } else if (pkt == net::Session::PacketType::Tree) {
                 auto new_tree = co_await session->receiveTreePayload();
-
                 {
                   std::lock_guard<std::mutex> lock(peer_mutex);
                   if (peer_idx < peer_list.size())
@@ -499,11 +632,115 @@ int main(int argc, char* argv[]) {
                             std::move(new_tree));
                 }
                 screen.PostEvent(Event::Custom);
+
+                // ---- SyncRequest: remote wants us to send them our files ----
+              } else if (pkt == net::Session::PacketType::SyncRequest) {
+                // 1. Receive requester's current tree
+                auto pt2 = co_await session->receivePacketType();
+                if (pt2 != net::Session::PacketType::Tree)
+                  break;
+                auto requester_tree = co_await session->receiveTreePayload();
+
+                // 2. Compute what the requester is missing (diff from their
+                // POV)
+                //    local_peer.tree = "new" (ours), requester_tree = "old"
+                auto diffs = fstree::diffTree(requester_tree, *local_peer.tree);
+
+                // Count only file operations (directories are implicit)
+                int total_ops = 0;
+                for (auto& d : diffs) {
+                  if (d.type == fstree::ChangeType::Added &&
+                      d.new_node->type == fstree::NodeType::File)
+                    ++total_ops;
+                  else if (d.type == fstree::ChangeType::Deleted)
+                    ++total_ops;
+                  else if (d.type == fstree::ChangeType::Modified &&
+                           d.new_node->type == fstree::NodeType::File)
+                    ++total_ops;
+                }
+
+                // 3. Tell the requester how many operations to expect
+                co_await session->sendSyncHeader(
+                    static_cast<uint32_t>(total_ops));
+
+                // 4. Stream files / deletes to requester
+                for (auto& d : diffs) {
+                  if (d.type == fstree::ChangeType::Added &&
+                      d.new_node->type == fstree::NodeType::File) {
+                    // Find the Node in our local tree
+                    auto it = local_peer.tree->index.find(d.new_node->path);
+                    if (it != local_peer.tree->index.end())
+                      co_await session->sendTaggedFile(*local_peer.tree,
+                                                       *it->second);
+
+                  } else if (d.type == fstree::ChangeType::Deleted) {
+                    co_await session->sendDeleteNotice(d.old_node->path);
+
+                  } else if (d.type == fstree::ChangeType::Modified &&
+                             d.new_node->type == fstree::NodeType::File) {
+                    auto it = local_peer.tree->index.find(d.new_node->path);
+                    if (it != local_peer.tree->index.end())
+                      co_await session->sendTaggedFile(*local_peer.tree,
+                                                       *it->second);
+                  }
+                  // Directories: created implicitly when their files arrive
+                }
+
+                // 5. Send our own tree so the requester's diff view updates,
+                //    then signal end of sync
+                co_await session->sendTaggedTree(*local_peer.tree);
+                co_await session->sendSyncDone();
+
+                // The requester now mirrors our tree — store a fresh snapshot
+                // so our diff view reflects the post-sync state immediately.
+                {
+                  std::lock_guard<std::mutex> lock(peer_mutex);
+                  if (peer_idx < peer_list.size())
+                    peer_list[peer_idx].tree =
+                        std::make_shared<fstree::DirectoryTree>(
+                            local_peer.tree->root_path);
+                }
+                screen.PostEvent(Event::Custom);
+
+                // ---- SyncHeader: total op count from sender ----
+              } else if (pkt == net::Session::PacketType::SyncHeader) {
+                uint32_t total = co_await session->receiveSyncHeader();
+                sync_state.files_total.store(static_cast<int>(total));
+                sync_state.phase.store(SyncState::Phase::SyncingFiles);
+                screen.PostEvent(Event::Custom);
+
+                // ---- FileData: we are the requester, receiving a file ----
+              } else if (pkt == net::Session::PacketType::FileData) {
+                co_await session->receiveFile(*local_peer.tree);
+                sync_state.files_done.fetch_add(1);
+                screen.PostEvent(Event::Custom);
+
+                // ---- DeleteFile: we are the requester, delete a local path
+                // ----
+              } else if (pkt == net::Session::PacketType::DeleteFile) {
+                auto rel_path = co_await session->receiveRelPath();
+                auto abs_path = local_peer.tree->root_path / rel_path;
+                std::error_code ec;
+                std::filesystem::remove_all(abs_path, ec);
+                *local_peer.tree =
+                    fstree::DirectoryTree(local_peer.tree->root_path);
+                sync_state.files_done.fetch_add(1);
+                screen.PostEvent(Event::Custom);
+
+                // ---- SyncDone: file stream finished ----
+              } else if (pkt == net::Session::PacketType::SyncDone) {
+                sync_state.phase.store(SyncState::Phase::Done);
+                screen.PostEvent(Event::Custom);
               }
-              // Unknown tags are silently skipped — forward-compatible
+              // Unknown tags silently skipped — forward-compatible
             }
           } catch (...) {
             // Session closed or I/O error — exit listener cleanly
+            auto ph = sync_state.phase.load();
+            if (ph == SyncState::Phase::SyncingTrees ||
+                ph == SyncState::Phase::SyncingFiles)
+              sync_state.phase.store(SyncState::Phase::Error);
+            screen.PostEvent(Event::Custom);
           }
         },
         asio::detached);

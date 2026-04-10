@@ -47,15 +47,28 @@ class Session : public std::enable_shared_from_this<Session> {
   enum class PacketType : uint8_t {
     Tree = 0x01,
     TreeRequest = 0x02,
+    SyncRequest = 0x03,  // requester sends this to kick off a sync
+    FileData = 0x04,     // sender streams one file per packet
+    DeleteFile = 0x05,   // sender tells requester to delete a path
+    SyncDone = 0x06,     // sender signals end of file stream
+    SyncHeader = 0x07,   // sender announces total op count before streaming
   };
 
   asio::awaitable<void> sendPacketType(PacketType);
   asio::awaitable<PacketType> receivePacketType();
 
-  // Request the remote side to re-send its tree (refresh)
+  // Refresh (tree exchange only)
   asio::awaitable<void> sendTreeRequest();
-  // Returns true when a TreeRequest arrived (caller should send back its tree)
   asio::awaitable<bool> receiveTreeRequest();
+
+  // Sync helpers — called by the listener / sync coroutine
+  asio::awaitable<void> sendTaggedFile(const fstree::DirectoryTree&,
+                                       const fstree::Node&);
+  asio::awaitable<void> sendDeleteNotice(const std::filesystem::path& rel_path);
+  asio::awaitable<void> sendSyncDone();
+  asio::awaitable<void> sendSyncHeader(uint32_t total_ops);
+  asio::awaitable<uint32_t> receiveSyncHeader();
+  asio::awaitable<std::filesystem::path> receiveRelPath();
 
   // Utlilities
   tcp::socket& socket();

@@ -418,6 +418,144 @@ asio::awaitable<bool> Session::receiveTreeRequest() {
   }
 }
 
+asio::awaitable<void> Session::sendTaggedFile(const fstree::DirectoryTree& tree,
+                                              const fstree::Node& node) {
+  // Tag byte first, then the existing sendFile payload.
+  // sendFile acquires busy_ itself, so we just prepend the tag here
+  // while we own the strand exclusively via sendFile's locking.
+  // Simplest correct approach: send tag then call sendFile (both acquire busy_
+  // sequentially — safe because we are the only writer at this point).
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    co_await sendPacketType(PacketType::FileData);
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+  co_await sendFile(tree, node);
+}
+
+asio::awaitable<void> Session::sendDeleteNotice(
+    const std::filesystem::path& rel_path) {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    std::ostringstream os;
+    fstree::wire::write_string(os, rel_path.generic_string());
+    auto buf = os.str();
+    uint64_t sz_be = htobe64(buf.size());
+
+    uint8_t tag = static_cast<uint8_t>(PacketType::DeleteFile);
+    std::vector<asio::const_buffer> buffers{
+        asio::buffer(&tag, 1),
+        asio::buffer(&sz_be, sizeof(sz_be)),
+        asio::buffer(buf),
+    };
+    co_await asio::async_write(
+        socket_, buffers, asio::bind_executor(strand_, asio::use_awaitable));
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+}
+
+asio::awaitable<void> Session::sendSyncDone() {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    co_await sendPacketType(PacketType::SyncDone);
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+}
+
+asio::awaitable<void> Session::sendSyncHeader(uint32_t total_ops) {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    uint8_t tag = static_cast<uint8_t>(PacketType::SyncHeader);
+    uint32_t be = htobe32(total_ops);
+    std::vector<asio::const_buffer> bufs{
+        asio::buffer(&tag, 1),
+        asio::buffer(&be, sizeof(be)),
+    };
+    co_await asio::async_write(
+        socket_, bufs, asio::bind_executor(strand_, asio::use_awaitable));
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+}
+
+asio::awaitable<uint32_t> Session::receiveSyncHeader() {
+  // The SyncHeader tag byte has already been consumed by receivePacketType().
+  // We only need to read the 4-byte operation count.
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    uint32_t be = 0;
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(&be, sizeof(be)),
+        asio::bind_executor(strand_, asio::use_awaitable));
+    busy_.store(false);
+    co_return be32toh(be);
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+}
+
+asio::awaitable<std::filesystem::path> Session::receiveRelPath() {
+  // Called from the listener after consuming a DeleteFile tag.
+  // Acquires busy_ independently.
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    uint64_t sz_be = 0;
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(&sz_be, sizeof(sz_be)),
+        asio::bind_executor(strand_, asio::use_awaitable));
+    uint64_t sz = be64toh(sz_be);
+    if (sz > 4096)
+      throw std::runtime_error("path too long");
+
+    std::vector<uint8_t> buf(sz);
+    co_await asio::async_read(
+        socket_,
+        asio::buffer(buf),
+        asio::bind_executor(strand_, asio::use_awaitable));
+
+    std::istringstream is(std::string(buf.begin(), buf.end()));
+    auto path_str = fstree::wire::read_string(is);
+
+    busy_.store(false);
+    co_return std::filesystem::path(path_str);
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+}
+
 tcp::socket& Session::socket() {
   return socket_;
 }
