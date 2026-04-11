@@ -211,7 +211,8 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
   busy_.store(false);
 }
 
-asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree) {
+asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree,
+                                          bool rebuild_tree) {
   // Ensure strand entry
   co_await asio::dispatch(strand_, asio::use_awaitable);
 
@@ -284,7 +285,8 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree) {
   }
 
   file.close();
-  tree = fstree::DirectoryTree(tree.root_path);
+  if (rebuild_tree)
+    tree = fstree::DirectoryTree(tree.root_path);
   busy_.store(false);
 }
 
@@ -451,6 +453,32 @@ asio::awaitable<void> Session::sendDeleteNotice(
     uint64_t sz_be = htobe64(buf.size());
 
     uint8_t tag = static_cast<uint8_t>(PacketType::DeleteFile);
+    std::vector<asio::const_buffer> buffers{
+        asio::buffer(&tag, 1),
+        asio::buffer(&sz_be, sizeof(sz_be)),
+        asio::buffer(buf),
+    };
+    co_await asio::async_write(
+        socket_, buffers, asio::bind_executor(strand_, asio::use_awaitable));
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+}
+
+asio::awaitable<void> Session::sendCreateDir(
+    const std::filesystem::path& rel_path) {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    std::ostringstream os;
+    fstree::wire::write_string(os, rel_path.generic_string());
+    auto buf = os.str();
+    uint64_t sz_be = htobe64(buf.size());
+    uint8_t tag = static_cast<uint8_t>(PacketType::CreateDir);
     std::vector<asio::const_buffer> buffers{
         asio::buffer(&tag, 1),
         asio::buffer(&sz_be, sizeof(sz_be)),

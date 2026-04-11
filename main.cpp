@@ -58,11 +58,12 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
   return info;
 }
 
-// FIX: Syncing new directories whether empty or filled doesn't work
 // TODO: Mutual disconnect Peer
 // TODO: IP and PORT input validation (avoid duplicate peers)
 // TODO: Separate sync_state for each peer
-// TODO: implement the timeout feature
+// TODO: Implement the timeout feature
+// TODO: Implement parallel sending and receiving files
+// TODO: Implement Error handeling
 int main(int argc, char* argv[]) {
   using namespace ftxui;
 
@@ -336,36 +337,40 @@ int main(int argc, char* argv[]) {
   auto diff_row = [&](const fstree::NodeDiff& d) -> Element {
     std::string tag, path_str;
     Color tag_color = Color::White;
+    bool is_dir = false;
 
     if (d.type == fstree::ChangeType::Added) {
       tag = " + ";
       tag_color = Color::Green;
       path_str = d.new_node->path.generic_string();
+      is_dir = (d.new_node->type == fstree::NodeType::Directory);
     } else if (d.type == fstree::ChangeType::Deleted) {
       tag = " - ";
       tag_color = Color::Red;
       path_str = d.old_node->path.generic_string();
+      is_dir = (d.old_node->type == fstree::NodeType::Directory);
     } else {
       tag = " ~ ";
       tag_color = Color::Yellow;
       path_str = d.new_node->path.generic_string();
     }
 
-    std::string size_str;
-    if (d.type == fstree::ChangeType::Added &&
-        d.new_node->type == fstree::NodeType::File)
-      size_str = fmt_size(d.new_node->size);
-    else if (d.type == fstree::ChangeType::Deleted &&
-             d.old_node->type == fstree::NodeType::File)
-      size_str = fmt_size(d.old_node->size);
-    else if (d.type == fstree::ChangeType::Modified)
-      size_str =
+    std::string right_str;
+    if (is_dir) {
+      right_str = "dir/";
+    } else if (d.type == fstree::ChangeType::Added) {
+      right_str = fmt_size(d.new_node->size);
+    } else if (d.type == fstree::ChangeType::Deleted) {
+      right_str = fmt_size(d.old_node->size);
+    } else if (d.type == fstree::ChangeType::Modified) {
+      right_str =
           fmt_size(d.old_node->size) + " -> " + fmt_size(d.new_node->size);
+    }
 
     return hbox({
         text(tag) | color(tag_color) | bold,
         text(path_str) | flex,
-        text(size_str) | color(Color::GrayDark),
+        text(right_str) | color(Color::GrayDark) | dim,
     });
   };
 
@@ -646,17 +651,54 @@ int main(int argc, char* argv[]) {
                 //    local_peer.tree = "new" (ours), requester_tree = "old"
                 auto diffs = fstree::diffTree(requester_tree, *local_peer.tree);
 
-                // Count only file operations (directories are implicit)
+                std::function<int(const fstree::Node&)> countOps =
+                    [&](const fstree::Node& node) -> int {
+                  if (node.type == fstree::NodeType::File)
+                    return 1;
+                  const auto& kids = fstree::children(node);
+                  if (kids.empty())
+                    return 1;
+                  int n = 0;
+                  for (auto& c : kids)
+                    n += countOps(*c);
+                  return n;
+                };
+
+                // Helper: recursively send every file inside an added subtree,
+                // or send a CreateDir for an empty directory.
+                std::function<asio::awaitable<void>(const fstree::Node&)>
+                    sendSubtree;
+                sendSubtree =
+                    [&](const fstree::Node& node) -> asio::awaitable<void> {
+                  if (node.type == fstree::NodeType::File) {
+                    auto it = local_peer.tree->index.find(node.path);
+                    if (it != local_peer.tree->index.end())
+                      co_await session->sendTaggedFile(*local_peer.tree,
+                                                       *it->second);
+                  } else {
+                    const auto& kids = fstree::children(node);
+                    if (kids.empty()) {
+                      co_await session->sendCreateDir(node.path);
+                    } else {
+                      for (auto& child : kids)
+                        co_await sendSubtree(*child);
+                    }
+                  }
+                };
+
+                // Count all operations
                 int total_ops = 0;
                 for (auto& d : diffs) {
-                  if (d.type == fstree::ChangeType::Added &&
-                      d.new_node->type == fstree::NodeType::File)
+                  if (d.type == fstree::ChangeType::Added) {
+                    auto it = local_peer.tree->index.find(d.new_node->path);
+                    if (it != local_peer.tree->index.end())
+                      total_ops += countOps(*it->second);
+                  } else if (d.type == fstree::ChangeType::Deleted) {
+                    ++total_ops;  // one remove_all
+                  } else if (d.type == fstree::ChangeType::Modified &&
+                             d.new_node->type == fstree::NodeType::File) {
                     ++total_ops;
-                  else if (d.type == fstree::ChangeType::Deleted)
-                    ++total_ops;
-                  else if (d.type == fstree::ChangeType::Modified &&
-                           d.new_node->type == fstree::NodeType::File)
-                    ++total_ops;
+                  }
                 }
 
                 // 3. Tell the requester how many operations to expect
@@ -665,15 +707,14 @@ int main(int argc, char* argv[]) {
 
                 // 4. Stream files / deletes to requester
                 for (auto& d : diffs) {
-                  if (d.type == fstree::ChangeType::Added &&
-                      d.new_node->type == fstree::NodeType::File) {
-                    // Find the Node in our local tree
+                  if (d.type == fstree::ChangeType::Added) {
+                    // Added file or directory subtree
                     auto it = local_peer.tree->index.find(d.new_node->path);
                     if (it != local_peer.tree->index.end())
-                      co_await session->sendTaggedFile(*local_peer.tree,
-                                                       *it->second);
+                      co_await sendSubtree(*it->second);
 
                   } else if (d.type == fstree::ChangeType::Deleted) {
+                    // Deleted file or directory — remove_all handles recursion
                     co_await session->sendDeleteNotice(d.old_node->path);
 
                   } else if (d.type == fstree::ChangeType::Modified &&
@@ -683,7 +724,6 @@ int main(int argc, char* argv[]) {
                       co_await session->sendTaggedFile(*local_peer.tree,
                                                        *it->second);
                   }
-                  // Directories: created implicitly when their files arrive
                 }
 
                 // 5. Send our own tree so the requester's diff view updates,
@@ -711,24 +751,42 @@ int main(int argc, char* argv[]) {
 
                 // ---- FileData: we are the requester, receiving a file ----
               } else if (pkt == net::Session::PacketType::FileData) {
-                co_await session->receiveFile(*local_peer.tree);
+                co_await session->receiveFile(*local_peer.tree, false);
                 sync_state.files_done.fetch_add(1);
                 screen.PostEvent(Event::Custom);
 
-                // ---- DeleteFile: we are the requester, delete a local path
-                // ----
+                // ---- DeleteFile: we are the requester, delete a path ----
               } else if (pkt == net::Session::PacketType::DeleteFile) {
                 auto rel_path = co_await session->receiveRelPath();
                 auto abs_path = local_peer.tree->root_path / rel_path;
                 std::error_code ec;
                 std::filesystem::remove_all(abs_path, ec);
-                *local_peer.tree =
-                    fstree::DirectoryTree(local_peer.tree->root_path);
+                // defer tree rebuild to SyncDone
                 sync_state.files_done.fetch_add(1);
                 screen.PostEvent(Event::Custom);
 
-                // ---- SyncDone: file stream finished ----
+                // ---- CreateDir: create an empty directory ----
+              } else if (pkt == net::Session::PacketType::CreateDir) {
+                auto rel_path = co_await session->receiveRelPath();
+                auto abs_path = local_peer.tree->root_path / rel_path;
+                std::error_code ec;
+                std::filesystem::create_directories(abs_path, ec);
+                // defer tree rebuild to SyncDone
+                sync_state.files_done.fetch_add(1);
+                screen.PostEvent(Event::Custom);
+
+                // ---- SyncHeader: total op count from sender ----
+              } else if (pkt == net::Session::PacketType::SyncHeader) {
+                uint32_t total = co_await session->receiveSyncHeader();
+                sync_state.files_total.store(static_cast<int>(total));
+                sync_state.phase.store(SyncState::Phase::SyncingFiles);
+                screen.PostEvent(Event::Custom);
+
+                // ---- SyncDone: all operations received ----
               } else if (pkt == net::Session::PacketType::SyncDone) {
+                // Single rebuild covering all received files, deletes, and dirs
+                *local_peer.tree =
+                    fstree::DirectoryTree(local_peer.tree->root_path);
                 sync_state.phase.store(SyncState::Phase::Done);
                 screen.PostEvent(Event::Custom);
               }

@@ -187,14 +187,19 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
             } else if ((*old_it)->type == NodeType::File) {
               const auto& old_it_meta = std::get<FileMeta>((*old_it)->data);
               const auto& new_it_meta = std::get<FileMeta>((*new_it)->data);
-              if (old_it_meta.size == new_it_meta.size) {
-                (*old_it)->generate_hash(old_tree.root_path);
-                (*new_it)->generate_hash(new_tree.root_path);
-                if (old_it_meta.file_hash != new_it_meta.file_hash) {
-                  nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
-                }
-              } else {
+              if (old_it_meta.size != new_it_meta.size) {
                 nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
+              } else {
+                // Only compare hashes when both are locally accessible.
+                // Peer trees received over the wire may not have hashes, so
+                // only generate for old_tree and skip if peer hash is absent.
+                (*old_it)->generate_hash(old_tree.root_path);
+                if (old_it_meta.file_hash.has_value() &&
+                    new_it_meta.file_hash.has_value()) {
+                  if (old_it_meta.file_hash != new_it_meta.file_hash)
+                    nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
+                }
+                // hash absent on peer side + equal sizes → treat as identical
               }
             } else {
               diffLoop(old_it->get(), new_it->get());
@@ -202,9 +207,13 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
             old_it++;
             new_it++;
           } else if ((*old_it)->name < (*new_it)->name) {
+            // Entire subtree removed — emit one directory-level diff so the
+            // sync loop can delete it with remove_all in a single operation.
             nodeDiffVec.push_back(NodeDiff::deleted(**old_it));
             old_it++;
           } else {
+            // Entire subtree added — emit one directory-level diff so the
+            // sync loop can send all its contents as a unit.
             nodeDiffVec.push_back(NodeDiff::added(**new_it));
             new_it++;
           }

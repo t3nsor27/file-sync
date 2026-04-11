@@ -39,7 +39,8 @@ class Session : public std::enable_shared_from_this<Session> {
   asio::awaitable<void> sendFile(const fstree::DirectoryTree&,
                                  const fstree::Node&,
                                  uint32_t chunk_size = MAX_FILE_CHUNK_SIZE);
-  asio::awaitable<void> receiveFile(fstree::DirectoryTree&);
+  asio::awaitable<void> receiveFile(fstree::DirectoryTree&,
+                                    bool rebuild_tree = true);
   asio::awaitable<void> sendHello(const HelloPacket&);
   asio::awaitable<HelloPacket> receiveHello();
 
@@ -52,6 +53,7 @@ class Session : public std::enable_shared_from_this<Session> {
     DeleteFile = 0x05,   // sender tells requester to delete a path
     SyncDone = 0x06,     // sender signals end of file stream
     SyncHeader = 0x07,   // sender announces total op count before streaming
+    CreateDir  = 0x08,   // sender tells requester to create an empty directory
   };
 
   asio::awaitable<void> sendPacketType(PacketType);
@@ -65,6 +67,7 @@ class Session : public std::enable_shared_from_this<Session> {
   asio::awaitable<void> sendTaggedFile(const fstree::DirectoryTree&,
                                        const fstree::Node&);
   asio::awaitable<void> sendDeleteNotice(const std::filesystem::path& rel_path);
+  asio::awaitable<void> sendCreateDir(const std::filesystem::path& rel_path);
   asio::awaitable<void> sendSyncDone();
   asio::awaitable<void> sendSyncHeader(uint32_t total_ops);
   asio::awaitable<uint32_t> receiveSyncHeader();
