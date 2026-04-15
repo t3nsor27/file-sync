@@ -44,21 +44,20 @@ struct PeerInfo {
 
 PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
                          const net::Session::HelloPacket& hello) {
-  auto& socket = session->socket();
+  auto& socket  = session->socket();
   auto endpoint = socket.remote_endpoint();
 
   PeerInfo info;
   info.address = endpoint.address();
-  info.port = endpoint.port();
+  info.port    = endpoint.port();
   info.session = session;
 
   info.peer_id = hello.peer_id;
-  info.name = hello.hostname;
+  info.name    = hello.hostname;
 
   return info;
 }
 
-// TODO: Mutual disconnect Peer
 // TODO: IP and PORT input validation (avoid duplicate peers)
 // TODO: Separate sync_state for each peer
 // TODO: Implement the timeout feature
@@ -71,16 +70,16 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  auto screen = ScreenInteractive::Fullscreen();
+  auto screen   = ScreenInteractive::Fullscreen();
   auto bg_color = Color::Palette256(16);
 
   auto [hostname, ip_addr] = GetHostInfo();
-  std::string ip = ip_addr.to_string();
+  std::string ip           = ip_addr.to_string();
   std::string peer_ip, peer_port, peer_timeout;
   std::mutex peer_mutex;
   std::vector<PeerInfo> peer_list;
   uint16_t port = std::stoi(argv[1]);
-  auto peer = std::make_shared<net::Peer>(port);
+  auto peer     = std::make_shared<net::Peer>(port);
   PeerInfo local_peer{
       hostname,
       peer->id(),
@@ -117,7 +116,7 @@ int main(int argc, char* argv[]) {
           [&, session]() -> asio::awaitable<void> {
             co_await session->sendHello({peer->id(), hostname});
             auto hello = co_await session->receiveHello();
-            auto info = ExtractPeerInfo(session, hello);
+            auto info  = ExtractPeerInfo(session, hello);
 
             co_await session->sendTree(*local_peer.tree);
             info.tree = std::make_shared<fstree::DirectoryTree>(
@@ -168,7 +167,7 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------------------------------------------
   auto peer_input = [](StringRef s, std::string placeholder) {
     InputOption input_style = InputOption::Default();
-    input_style.transform = [](InputState s) {
+    input_style.transform   = [](InputState s) {
       if (s.focused) {
         s.element |= borderStyled(LIGHT, Color::White);
       } else {
@@ -231,8 +230,8 @@ int main(int argc, char* argv[]) {
           },
   });
 
-  auto peer_ip_input = peer_input(&peer_ip, "IP Address");
-  auto peer_port_input = peer_input(&peer_port, "Port");
+  auto peer_ip_input      = peer_input(&peer_ip, "IP Address");
+  auto peer_port_input    = peer_input(&peer_port, "Port");
   auto peer_timeout_input = peer_input(&peer_timeout, "Timeout");
 
   auto peer_container = Container::Vertical({
@@ -256,12 +255,12 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------------------------------------------
 
   // NOTE: Try to implement a Vertical underline menu
-  int selected_peer = 0;
+  int selected_peer              = 0;
   auto connected_peer_menu_entry = [&selected_peer,
                                     bg_color](const PeerInfo& info) {
     MenuEntryOption entry_option;
     std::string peer_name = info.name;
-    entry_option.label = peer_name;
+    entry_option.label    = peer_name;
     std::string address =
         info.address.to_v4().to_string() + ":" + std::to_string(info.port);
     entry_option.transform = [&selected_peer, address, peer_name, &bg_color](
@@ -337,22 +336,22 @@ int main(int argc, char* argv[]) {
   auto diff_row = [&](const fstree::NodeDiff& d) -> Element {
     std::string tag, path_str;
     Color tag_color = Color::White;
-    bool is_dir = false;
+    bool is_dir     = false;
 
     if (d.type == fstree::ChangeType::Added) {
-      tag = " + ";
+      tag       = " + ";
       tag_color = Color::Green;
-      path_str = d.new_node->path.generic_string();
-      is_dir = (d.new_node->type == fstree::NodeType::Directory);
+      path_str  = d.new_node->path.generic_string();
+      is_dir    = (d.new_node->type == fstree::NodeType::Directory);
     } else if (d.type == fstree::ChangeType::Deleted) {
-      tag = " - ";
+      tag       = " - ";
       tag_color = Color::Red;
-      path_str = d.old_node->path.generic_string();
-      is_dir = (d.old_node->type == fstree::NodeType::Directory);
+      path_str  = d.old_node->path.generic_string();
+      is_dir    = (d.old_node->type == fstree::NodeType::Directory);
     } else {
-      tag = " ~ ";
+      tag       = " ~ ";
       tag_color = Color::Yellow;
-      path_str = d.new_node->path.generic_string();
+      path_str  = d.new_node->path.generic_string();
     }
 
     std::string right_str;
@@ -417,7 +416,7 @@ int main(int argc, char* argv[]) {
       .on_click =
           [&]() {
             using Phase = SyncState::Phase;
-            auto ph = sync_state.phase.load();
+            auto ph     = sync_state.phase.load();
             if (ph == Phase::SyncingTrees || ph == Phase::SyncingFiles)
               return;
 
@@ -461,18 +460,75 @@ int main(int argc, char* argv[]) {
       .transform =
           [&](EntryState state) {
             using Phase = SyncState::Phase;
-            auto ph = sync_state.phase.load();
+            auto ph     = sync_state.phase.load();
             bool busy = ph == Phase::SyncingTrees || ph == Phase::SyncingFiles;
-            auto btn = text(busy ? " Syncing... " : " Sync ") | center;
+            auto btn  = text(busy ? " Syncing... " : " Sync ") | center;
             if (busy)
               return btn | borderLight | dim;
             return state.focused ? btn | borderDouble : btn | borderLight;
           },
   });
 
+  // ---- Disconnect button ----
+  auto disconnect_button = Button({
+      .label = "DISCONNECT",
+      .on_click =
+          [&]() {
+            using Phase = SyncState::Phase;
+            auto ph     = sync_state.phase.load();
+            if (ph == Phase::SyncingTrees || ph == Phase::SyncingFiles)
+              return;
+
+            std::shared_ptr<net::Session> session;
+            std::size_t idx = 0;
+            {
+              std::lock_guard<std::mutex> lock(peer_mutex);
+              if (peer_list.empty() ||
+                  selected_peer >= static_cast<int>(peer_list.size()))
+                return;
+              idx     = static_cast<std::size_t>(selected_peer);
+              session = peer_list[idx].session.lock();
+              if (!session)
+                return;
+            }
+
+            asio::co_spawn(
+                peer->getExecutor(),
+                [&, session, idx]() -> asio::awaitable<void> {
+                  try {
+                    co_await session->sendPacketType(
+                        net::Session::PacketType::DisconnectRequest);
+                  } catch (...) {
+                  }
+                  session->close();
+                  {
+                    std::lock_guard<std::mutex> lock(peer_mutex);
+                    if (idx < peer_list.size())
+                      peer_list.erase(peer_list.begin() + idx);
+                  }
+                  screen.PostEvent(Event::Custom);
+                },
+                asio::detached);
+          },
+      .transform =
+          [&](EntryState state) {
+            using Phase = SyncState::Phase;
+            auto ph     = sync_state.phase.load();
+            bool busy = ph == Phase::SyncingTrees || ph == Phase::SyncingFiles;
+            bool no_peer = peer_list.empty() ||
+                           selected_peer >= static_cast<int>(peer_list.size());
+            auto btn     = text(" Disconnect ") | center;
+            if (busy || no_peer)
+              return btn | borderLight | dim;
+            return state.focused ? btn | borderDouble | color(Color::Red)
+                                 : btn | borderLight | color(Color::Red);
+          },
+  });
+
   // ---- Diff renderer ----
   auto diff_renderer = Renderer(
-      Container::Horizontal({refresh_button, sync_button}), [&]() -> Element {
+      Container::Horizontal({refresh_button, sync_button, disconnect_button}),
+      [&]() -> Element {
         std::string peer_name;
         std::vector<fstree::NodeDiff> diffs;
         bool has_peer = false;
@@ -486,7 +542,7 @@ int main(int argc, char* argv[]) {
             peer_name = peer_list[selected_peer].name + "  (" +
                         peer_list[selected_peer].address.to_string() + ":" +
                         std::to_string(peer_list[selected_peer].port) + ")";
-            has_tree = peer_list[selected_peer].tree != nullptr;
+            has_tree  = peer_list[selected_peer].tree != nullptr;
             if (has_tree)
               diffs = fstree::diffTree(*local_peer.tree,
                                        *peer_list[selected_peer].tree);
@@ -505,12 +561,14 @@ int main(int argc, char* argv[]) {
             text(" "),
             sync_button->Render(),
             text(" "),
+            disconnect_button->Render(),
+            text(" "),
         });
 
         // -- Progress bar (shown while syncing) --
         using Phase = SyncState::Phase;
-        auto phase = sync_state.phase.load();
-        int f_done = sync_state.files_done.load();
+        auto phase  = sync_state.phase.load();
+        int f_done  = sync_state.files_done.load();
         int f_total = sync_state.files_total.load();
 
         Elements progress_row;
@@ -521,21 +579,21 @@ int main(int argc, char* argv[]) {
           Color status_color = Color::White;
 
           if (phase == Phase::SyncingTrees) {
-            status_text = "STATUS: SYNCING TREES";
+            status_text  = "STATUS: SYNCING TREES";
             bar_fraction = 0.0f;
             status_color = Color::Yellow;
           } else if (phase == Phase::SyncingFiles) {
-            int total = f_total > 0 ? f_total : 1;
-            status_text = "STATUS: SYNCING FILES [" + std::to_string(f_done) +
-                          "/" + std::to_string(f_total) + "]";
+            int total    = f_total > 0 ? f_total : 1;
+            status_text  = "STATUS: SYNCING FILES [" + std::to_string(f_done) +
+                           "/" + std::to_string(f_total) + "]";
             bar_fraction = static_cast<float>(f_done) / total;
             status_color = Color::Cyan;
           } else if (phase == Phase::Done) {
-            status_text = "STATUS: SYNC COMPLETE";
+            status_text  = "STATUS: SYNC COMPLETE";
             bar_fraction = 1.0f;
             status_color = Color::Green;
           } else {
-            status_text = "STATUS: SYNC ERROR";
+            status_text  = "STATUS: SYNC ERROR";
             bar_fraction = 0.0f;
             status_color = Color::Red;
           }
@@ -789,6 +847,17 @@ int main(int argc, char* argv[]) {
                     fstree::DirectoryTree(local_peer.tree->root_path);
                 sync_state.phase.store(SyncState::Phase::Done);
                 screen.PostEvent(Event::Custom);
+
+                // ---- DisconnectRequest: remote peer asked to remove them ----
+              } else if (pkt == net::Session::PacketType::DisconnectRequest) {
+                session->close();
+                {
+                  std::lock_guard<std::mutex> lock(peer_mutex);
+                  if (peer_idx < peer_list.size())
+                    peer_list.erase(peer_list.begin() + peer_idx);
+                }
+                screen.PostEvent(Event::Custom);
+                co_return;
               }
               // Unknown tags silently skipped — forward-compatible
             }

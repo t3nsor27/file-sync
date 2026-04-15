@@ -13,9 +13,9 @@
 namespace net {
 using boost::asio::ip::tcp;
 namespace asio = boost::asio;
-namespace fs = std::filesystem;
+namespace fs   = std::filesystem;
 
-constexpr uint64_t MAX_TREE_SIZE = 64 * 1024 * 1024;        // 64MB
+constexpr uint64_t MAX_TREE_SIZE       = 64 * 1024 * 1024;  // 64MB
 constexpr uint32_t MAX_FILE_CHUNK_SIZE = 64 * 1024 * 1024;  // 64 MB
 
 class Session : public std::enable_shared_from_this<Session> {
@@ -46,14 +46,15 @@ class Session : public std::enable_shared_from_this<Session> {
 
   // Packet type tag sent before each message after handshake
   enum class PacketType : uint8_t {
-    Tree = 0x01,
+    Tree        = 0x01,
     TreeRequest = 0x02,
     SyncRequest = 0x03,  // requester sends this to kick off a sync
-    FileData = 0x04,     // sender streams one file per packet
-    DeleteFile = 0x05,   // sender tells requester to delete a path
-    SyncDone = 0x06,     // sender signals end of file stream
-    SyncHeader = 0x07,   // sender announces total op count before streaming
-    CreateDir  = 0x08,   // sender tells requester to create an empty directory
+    FileData    = 0x04,  // sender streams one file per packet
+    DeleteFile  = 0x05,  // sender tells requester to delete a path
+    SyncDone    = 0x06,  // sender signals end of file stream
+    SyncHeader  = 0x07,  // sender announces total op count before streaming
+    CreateDir   = 0x08,  // sender tells requester to create an empty directory
+    DisconnectRequest = 0x09,  // sender tells requester to disconnect
   };
 
   asio::awaitable<void> sendPacketType(PacketType);
@@ -90,7 +91,7 @@ class Session : public std::enable_shared_from_this<Session> {
 
 class Peer : public std::enable_shared_from_this<Peer> {
  public:
-  using OnAccept = std::function<void(std::weak_ptr<Session>)>;
+  using OnAccept  = std::function<void(std::weak_ptr<Session>)>;
   using OnConnect = std::function<void(std::weak_ptr<Session>)>;
 
   explicit Peer(uint16_t);
