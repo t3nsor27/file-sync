@@ -73,6 +73,7 @@ class Session : public std::enable_shared_from_this<Session> {
   asio::awaitable<void> sendSyncHeader(uint32_t total_ops);
   asio::awaitable<uint32_t> receiveSyncHeader();
   asio::awaitable<std::filesystem::path> receiveRelPath();
+  asio::awaitable<void> sendDisconnectRequest();
 
   // Utlilities
   tcp::socket& socket();

@@ -200,6 +200,7 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
                     nodeDiffVec.push_back(
                         NodeDiff::modified(**old_it, **new_it));
                 }
+                // FIX: Make hash generation compulsory
                 // hash absent on peer side + equal sizes → treat as identical
               }
             } else {

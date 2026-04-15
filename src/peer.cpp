@@ -584,6 +584,20 @@ asio::awaitable<std::filesystem::path> Session::receiveRelPath() {
   }
 }
 
+asio::awaitable<void> Session::sendDisconnectRequest() {
+  co_await asio::dispatch(strand_, asio::use_awaitable);
+  while (busy_.exchange(true))
+    co_await asio::post(strand_, asio::use_awaitable);
+  try {
+    co_await sendPacketType(PacketType::DisconnectRequest);
+  } catch (...) {
+    busy_.store(false);
+    close();
+    throw;
+  }
+  busy_.store(false);
+}
+
 tcp::socket& Session::socket() {
   return socket_;
 }

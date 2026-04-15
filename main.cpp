@@ -1,4 +1,5 @@
 #include <boost/asio.hpp>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <ftxui/component/component.hpp>
@@ -58,11 +59,11 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
   return info;
 }
 
-// TODO: IP and PORT input validation (avoid duplicate peers)
 // TODO: Separate sync_state for each peer
 // TODO: Implement the timeout feature
 // TODO: Implement parallel sending and receiving files
 // TODO: Implement Error handeling
+// TODO: Change endian.h to boost-endian
 int main(int argc, char* argv[]) {
   using namespace ftxui;
 
@@ -78,6 +79,21 @@ int main(int argc, char* argv[]) {
   std::string peer_ip, peer_port, peer_timeout;
   std::mutex peer_mutex;
   std::vector<PeerInfo> peer_list;
+  int selected_peer = 0;
+
+  // Must be called with peer_mutex already held OR from UI thread after lock.
+  auto remove_peer_by_session = [&](std::shared_ptr<net::Session> s) -> bool {
+    for (auto it = peer_list.begin(); it != peer_list.end(); ++it) {
+      if (it->session.lock().get() == s.get()) {
+        peer_list.erase(it);
+        // Clamp selected_peer so it stays in range.
+        if (selected_peer >= static_cast<int>(peer_list.size()))
+          selected_peer = std::max(0, static_cast<int>(peer_list.size()) - 1);
+        return true;
+      }
+    }
+    return false;
+  };
   uint16_t port = std::stoi(argv[1]);
   auto peer     = std::make_shared<net::Peer>(port);
   PeerInfo local_peer{
@@ -117,6 +133,16 @@ int main(int argc, char* argv[]) {
             co_await session->sendHello({peer->id(), hostname});
             auto hello = co_await session->receiveHello();
             auto info  = ExtractPeerInfo(session, hello);
+
+            {
+              std::lock_guard<std::mutex> lock(peer_mutex);
+              for (auto& existing : peer_list) {
+                if (existing.peer_id == hello.peer_id) {
+                  session->close();
+                  co_return;
+                }
+              }
+            }
 
             co_await session->sendTree(*local_peer.tree);
             info.tree = std::make_shared<fstree::DirectoryTree>(
@@ -165,37 +191,131 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------------------------------------------
   // PEER PANEL
   // -------------------------------------------------------------------------------------------------
-  auto peer_input = [](StringRef s, std::string placeholder) {
-    InputOption input_style = InputOption::Default();
-    input_style.transform   = [](InputState s) {
-      if (s.focused) {
-        s.element |= borderStyled(LIGHT, Color::White);
-      } else {
-        s.element |= borderStyled(LIGHT, Color::Black);
-      }
-      return s.element;
-    };
-    auto input = Input(s, "", input_style);
 
-    // clang-format off
-    return Renderer(input, [=] {
-      return vbox({
-        text(placeholder) | bold,
-        input->Render() | flex | size(WIDTH, GREATER_THAN, 10)
-      });
-    });
-    // clang-format on
+  // ---- Validation helpers ----
+
+  enum class FieldState { Empty, Valid, Invalid };
+
+  // Validate an IP address string using Boost.Asio's parser.
+  auto validateIP = [](const std::string& s) -> FieldState {
+    if (s.empty())
+      return FieldState::Empty;
+    boost::system::error_code ec;
+    boost::asio::ip::make_address(s, ec);
+    return ec ? FieldState::Invalid : FieldState::Valid;
   };
 
+  // Validate a port string: must be a non-empty integer in [1, 65535].
+  auto validatePort = [](const std::string& s) -> FieldState {
+    if (s.empty())
+      return FieldState::Empty;
+    for (char c : s)
+      if (!std::isdigit(static_cast<unsigned char>(c)))
+        return FieldState::Invalid;
+    try {
+      long v = std::stol(s);
+      return (v >= 1 && v <= 65535) ? FieldState::Valid : FieldState::Invalid;
+    } catch (...) {
+      return FieldState::Invalid;
+    }
+  };
+
+  auto fieldBorderColor = [](FieldState fs, bool focused) -> Color {
+    if (fs == FieldState::Invalid)
+      return Color::Red;
+    if (fs == FieldState::Valid)
+      return focused ? Color::Green : Color::GreenLight;
+    // Empty
+    return focused ? Color::White : Color::GrayDark;
+  };
+
+  auto peer_input_validated = [&](StringRef s,
+                                  std::string label,
+                                  std::function<FieldState()> get_state) {
+    InputOption opt = InputOption::Default();
+    opt.transform   = [](InputState is) {
+      return is.element;
+    };
+    auto input = Input(s, "", opt);
+
+    return Renderer(input, [=]() mutable {
+      bool focused     = input->Focused();
+      FieldState fs    = get_state();
+      Color border_col = fieldBorderColor(fs, focused);
+
+      std::string icon;
+      Color icon_col = Color::White;
+      if (fs == FieldState::Valid) {
+        icon     = " ✓";
+        icon_col = Color::Green;
+      } else if (fs == FieldState::Invalid) {
+        icon     = " ✗";
+        icon_col = Color::Red;
+      }
+
+      // clang-format off
+      return vbox({
+          hbox({
+              text(label) | bold,
+              text(icon) | color(icon_col),
+          }),
+          input->Render() | borderStyled(LIGHT, border_col) |
+              size(WIDTH, GREATER_THAN, 10),
+      });
+      // clang-format on
+    });
+  };
+
+  auto isDuplicate = [&](const std::string& check_ip,
+                         uint16_t check_port) -> bool {
+    // Self-connect guard
+    boost::system::error_code ec;
+    auto addr = boost::asio::ip::make_address(check_ip, ec);
+    if (!ec && addr == ip_addr && check_port == port)
+      return true;
+    for (auto& p : peer_list) {
+      if (p.address == addr && p.port == check_port)
+        return true;
+    }
+    return false;
+  };
+
+  auto connectReady = [&]() -> bool {
+    if (validateIP(peer_ip) != FieldState::Valid)
+      return false;
+    if (validatePort(peer_port) != FieldState::Valid)
+      return false;
+    uint16_t p = static_cast<uint16_t>(std::stoi(peer_port));
+    std::lock_guard<std::mutex> lock(peer_mutex);
+    return !isDuplicate(peer_ip, p);
+  };
+
+  auto connectHint = [&]() -> std::string {
+    auto ip_st   = validateIP(peer_ip);
+    auto port_st = validatePort(peer_port);
+    if (ip_st == FieldState::Invalid)
+      return "  Invalid IP address";
+    if (port_st == FieldState::Invalid)
+      return "  Port must be 1 – 65535";
+    if (ip_st == FieldState::Valid && port_st == FieldState::Valid) {
+      uint16_t p = static_cast<uint16_t>(std::stoi(peer_port));
+      std::lock_guard<std::mutex> lock(peer_mutex);
+      if (isDuplicate(peer_ip, p))
+        return "  Already connected to this peer";
+    }
+    return "";
+  };
+
+  // ---- Connect button ----
   auto peer_connect_button = Button({
       .label = "CONNECT",
       .on_click =
           [&, peer]() {
-            if (peer_ip.empty() || peer_port.empty())
+            if (!connectReady())
               return;
-            uint16_t port = std::stoi(peer_port);
+            uint16_t p = static_cast<uint16_t>(std::stoi(peer_port));
             peer->doResolveAndConnect(
-                peer_ip, port, [&](std::weak_ptr<net::Session> ws) {
+                peer_ip, p, [&](std::weak_ptr<net::Session> ws) {
                   if (auto session = ws.lock()) {
                     asio::co_spawn(
                         peer->getExecutor(),
@@ -203,6 +323,16 @@ int main(int argc, char* argv[]) {
                           auto hello = co_await session->receiveHello();
                           co_await session->sendHello({peer->id(), hostname});
                           auto info = ExtractPeerInfo(session, hello);
+
+                          {
+                            std::lock_guard<std::mutex> lock(peer_mutex);
+                            for (auto& existing : peer_list) {
+                              if (existing.peer_id == hello.peer_id) {
+                                session->close();
+                                co_return;
+                              }
+                            }
+                          }
 
                           info.tree = std::make_shared<fstree::DirectoryTree>(
                               co_await session->receiveTree());
@@ -222,17 +352,30 @@ int main(int argc, char* argv[]) {
           },
       .transform =
           [&](EntryState state) {
-            auto button = text("CONNECT") | center;
-            if (state.focused) {
-              return button | borderDouble;
-            }
-            return button | borderHeavy;
+            bool ready = connectReady();
+            auto btn   = text(" CONNECT ") | center;
+            if (!ready)
+              return btn | borderLight | dim | color(Color::GrayDark);
+            return state.focused ? btn | borderDouble | color(Color::Green)
+                                 : btn | borderHeavy | color(Color::Green);
           },
   });
 
-  auto peer_ip_input      = peer_input(&peer_ip, "IP Address");
-  auto peer_port_input    = peer_input(&peer_port, "Port");
-  auto peer_timeout_input = peer_input(&peer_timeout, "Timeout");
+  auto peer_ip_input   = peer_input_validated(&peer_ip, "IP Address", [&]() {
+    return validateIP(peer_ip);
+  });
+  auto peer_port_input = peer_input_validated(&peer_port, "Port", [&]() {
+    return validatePort(peer_port);
+  });
+  auto peer_timeout_input =
+      peer_input_validated(&peer_timeout, "Timeout", [&]() {
+        if (peer_timeout.empty())
+          return FieldState::Empty;
+        for (char c : peer_timeout)
+          if (!std::isdigit(static_cast<unsigned char>(c)))
+            return FieldState::Invalid;
+        return FieldState::Valid;
+      });
 
   auto peer_container = Container::Vertical({
       peer_ip_input,
@@ -244,9 +387,15 @@ int main(int argc, char* argv[]) {
   });
 
   auto peer_renderer = Renderer(peer_container, [&]() {
+    std::string hint = connectHint();
+    Elements body;
+    body.push_back(peer_container->Render());
+    if (!hint.empty())
+      body.push_back(text(hint) | color(Color::Red) | dim);
+
     return vbox({text("CONNECT TO PEER") | bold | dim | center,
                  separatorLight(),
-                 peer_container->Render()}) |
+                 vbox(std::move(body))}) |
            borderLight;
   });
 
@@ -255,7 +404,6 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------------------------------------------
 
   // NOTE: Try to implement a Vertical underline menu
-  int selected_peer              = 0;
   auto connected_peer_menu_entry = [&selected_peer,
                                     bg_color](const PeerInfo& info) {
     MenuEntryOption entry_option;
@@ -480,33 +628,30 @@ int main(int argc, char* argv[]) {
               return;
 
             std::shared_ptr<net::Session> session;
-            std::size_t idx = 0;
             {
               std::lock_guard<std::mutex> lock(peer_mutex);
               if (peer_list.empty() ||
                   selected_peer >= static_cast<int>(peer_list.size()))
                 return;
-              idx     = static_cast<std::size_t>(selected_peer);
-              session = peer_list[idx].session.lock();
+              session = peer_list[selected_peer].session.lock();
               if (!session)
                 return;
+              remove_peer_by_session(session);
             }
 
+            sync_state.phase.store(Phase::Idle);
+            screen.PostEvent(Event::Custom);
+
+            // Notify the remote peer, then close the socket
             asio::co_spawn(
                 peer->getExecutor(),
-                [&, session, idx]() -> asio::awaitable<void> {
+                [&, session]() -> asio::awaitable<void> {
                   try {
-                    co_await session->sendPacketType(
-                        net::Session::PacketType::DisconnectRequest);
+                    co_await session->sendDisconnectRequest();
                   } catch (...) {
+                    // Best-effort: ignore send errors on disconnect
                   }
                   session->close();
-                  {
-                    std::lock_guard<std::mutex> lock(peer_mutex);
-                    if (idx < peer_list.size())
-                      peer_list.erase(peer_list.begin() + idx);
-                  }
-                  screen.PostEvent(Event::Custom);
                 },
                 asio::detached);
           },
@@ -519,7 +664,7 @@ int main(int argc, char* argv[]) {
                            selected_peer >= static_cast<int>(peer_list.size());
             auto btn     = text(" Disconnect ") | center;
             if (busy || no_peer)
-              return btn | borderLight | dim;
+              return btn | borderLight | dim | color(Color::GrayDark);
             return state.focused ? btn | borderDouble | color(Color::Red)
                                  : btn | borderLight | color(Color::Red);
           },
@@ -848,21 +993,26 @@ int main(int argc, char* argv[]) {
                 sync_state.phase.store(SyncState::Phase::Done);
                 screen.PostEvent(Event::Custom);
 
-                // ---- DisconnectRequest: remote peer asked to remove them ----
+                // ---- DisconnectRequest: remote peer is leaving ----
               } else if (pkt == net::Session::PacketType::DisconnectRequest) {
-                session->close();
                 {
                   std::lock_guard<std::mutex> lock(peer_mutex);
-                  if (peer_idx < peer_list.size())
-                    peer_list.erase(peer_list.begin() + peer_idx);
+                  remove_peer_by_session(session);
                 }
+                sync_state.phase.store(SyncState::Phase::Idle);
+                session->close();
                 screen.PostEvent(Event::Custom);
                 co_return;
               }
               // Unknown tags silently skipped — forward-compatible
             }
           } catch (...) {
-            // Session closed or I/O error — exit listener cleanly
+            // Session closed or I/O error — exit listener cleanly.
+            // Also remove this peer from the list so the UI stays consistent.
+            {
+              std::lock_guard<std::mutex> lock(peer_mutex);
+              remove_peer_by_session(session);
+            }
             auto ph = sync_state.phase.load();
             if (ph == SyncState::Phase::SyncingTrees ||
                 ph == SyncState::Phase::SyncingFiles)
