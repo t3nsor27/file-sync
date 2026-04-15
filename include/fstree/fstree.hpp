@@ -15,7 +15,7 @@
 
 namespace fstree {
 namespace fs = std::filesystem;
-using Hash = std::array<uint8_t, 32>;
+using Hash   = std::array<uint8_t, 32>;
 
 enum class NodeType : uint8_t { File, Directory };
 

@@ -143,7 +143,7 @@ NodeSnapshot::NodeSnapshot(const Node& node)
       mtime(node.mtime) {
   if (node.type == NodeType::File) {
     const FileMeta& meta = std::get<FileMeta>(node.data);
-    size = meta.size;
+    size                 = meta.size;
     if (meta.file_hash.has_value()) {
       file_hash = meta.file_hash;
     }
@@ -175,8 +175,8 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
       [&](const Node* old_node, const Node* new_node) {
         const std::vector<std::unique_ptr<Node>>& old_vec = children(*old_node);
         const std::vector<std::unique_ptr<Node>>& new_vec = children(*new_node);
-        auto old_it = old_vec.begin();
-        auto new_it = new_vec.begin();
+        auto old_it                                       = old_vec.begin();
+        auto new_it                                       = new_vec.begin();
 
         // Two pointer approach assuming sorted children vector
         for (; old_it != old_vec.end() && new_it != new_vec.end();) {
@@ -197,7 +197,8 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
                 if (old_it_meta.file_hash.has_value() &&
                     new_it_meta.file_hash.has_value()) {
                   if (old_it_meta.file_hash != new_it_meta.file_hash)
-                    nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
+                    nodeDiffVec.push_back(
+                        NodeDiff::modified(**old_it, **new_it));
                 }
                 // hash absent on peer side + equal sizes → treat as identical
               }
@@ -308,7 +309,7 @@ std::unique_ptr<Node> deserializeNode(std::istream& is) {
   auto mtime =
       fs::file_time_type(fs::file_time_type::duration(wire::read_u64(is)));
 
-  std::string name = wire::read_string(is);
+  std::string name   = wire::read_string(is);
   fs::path full_path = fs::path(wire::read_string(is));
 
   if (type == NodeType::File) {
@@ -350,7 +351,7 @@ DirectoryTree deserializeTree(std::vector<uint8_t> data) {
   std::istringstream is(std::string(data.begin(), data.end()),
                         std::ios::binary);
   fs::path root_path = fs::path(wire::read_string(is));
-  auto node = deserializeNode(is);
+  auto node          = deserializeNode(is);
   return DirectoryTree(root_path, std::move(node));
 }
 }  // namespace fstree

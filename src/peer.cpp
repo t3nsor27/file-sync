@@ -26,7 +26,7 @@ asio::awaitable<void> Session::sendTree(const fstree::DirectoryTree& tree) {
 
   // We own this session now
   try {
-    buffer_ = fstree::serializeTree(tree);
+    buffer_  = fstree::serializeTree(tree);
     size_be_ = htobe64(buffer_.size());
 
     std::vector<asio::const_buffer> buffers{
@@ -87,7 +87,7 @@ asio::awaitable<void> Session::sendTaggedTree(
     co_await asio::post(strand_, asio::use_awaitable);
 
   try {
-    buffer_ = fstree::serializeTree(tree);
+    buffer_  = fstree::serializeTree(tree);
     size_be_ = htobe64(buffer_.size());
 
     uint8_t tag = static_cast<uint8_t>(PacketType::Tree);
@@ -153,7 +153,7 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
 
   // Resolve absolute path
   fs::path file_path = tree.root_path / node.path;
-  auto file_size = std::get<fstree::FileMeta>(node.data).size;
+  auto file_size     = std::get<fstree::FileMeta>(node.data).size;
 
   std::ifstream file(file_path, std::ios::binary);
   if (!file)
@@ -164,8 +164,8 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
   fstree::wire::write_string(header, node.path.generic_string());
   fstree::wire::write_u64(header, file_size);
 
-  auto header_buf = header.str();
-  uint64_t header_size = header_buf.size();
+  auto header_buf         = header.str();
+  uint64_t header_size    = header_buf.size();
   uint64_t header_size_be = htobe64(header_size);
 
   // --- Header Debug ---
@@ -212,7 +212,7 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
 }
 
 asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree,
-                                          bool rebuild_tree) {
+                                           bool rebuild_tree) {
   // Ensure strand entry
   co_await asio::dispatch(strand_, asio::use_awaitable);
 
@@ -239,7 +239,7 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree,
 
   std::istringstream hdr_stream(std::string(hdr_buf.begin(), hdr_buf.end()));
 
-  fs::path rel_path = fstree::wire::read_string(hdr_stream);
+  fs::path rel_path  = fstree::wire::read_string(hdr_stream);
   uint64_t file_size = fstree::wire::read_u64(hdr_stream);
 
   // --- Header Debug ---
@@ -305,8 +305,8 @@ asio::awaitable<void> Session::sendHello(const HelloPacket& hello) {
     fstree::wire::write_u64(header, hello.peer_id);
     fstree::wire::write_string(header, hello.hostname);
 
-    auto header_buf = header.str();
-    uint64_t header_size = header_buf.size();
+    auto header_buf         = header.str();
+    uint64_t header_size    = header_buf.size();
     uint64_t header_size_be = htobe64(header_size);
 
     // --- Header Debug ---
@@ -364,7 +364,7 @@ asio::awaitable<Session::HelloPacket> Session::receiveHello() {
     std::istringstream is(std::string(buffer.begin(), buffer.end()),
                           std::ios::binary);
     HelloPacket hello;
-    hello.peer_id = fstree::wire::read_u64(is);
+    hello.peer_id  = fstree::wire::read_u64(is);
     hello.hostname = fstree::wire::read_string(is);
 
     busy_.store(false);
@@ -449,7 +449,7 @@ asio::awaitable<void> Session::sendDeleteNotice(
   try {
     std::ostringstream os;
     fstree::wire::write_string(os, rel_path.generic_string());
-    auto buf = os.str();
+    auto buf       = os.str();
     uint64_t sz_be = htobe64(buf.size());
 
     uint8_t tag = static_cast<uint8_t>(PacketType::DeleteFile);
@@ -476,9 +476,9 @@ asio::awaitable<void> Session::sendCreateDir(
   try {
     std::ostringstream os;
     fstree::wire::write_string(os, rel_path.generic_string());
-    auto buf = os.str();
+    auto buf       = os.str();
     uint64_t sz_be = htobe64(buf.size());
-    uint8_t tag = static_cast<uint8_t>(PacketType::CreateDir);
+    uint8_t tag    = static_cast<uint8_t>(PacketType::CreateDir);
     std::vector<asio::const_buffer> buffers{
         asio::buffer(&tag, 1),
         asio::buffer(&sz_be, sizeof(sz_be)),
