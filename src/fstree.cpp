@@ -80,8 +80,6 @@ void Node::generate_hash(const fs::path& root) {
     return;
 
   auto& file_meta = std::get<FileMeta>(data);
-  if (file_meta.file_hash.has_value())
-    return;
 
   std::ifstream file(root / path, std::ios::binary | std::ios::ate);
   if (!file)
@@ -114,6 +112,7 @@ DirectoryTree::DirectoryTree(fs::path dir_path)
     : root_path(dir_path),
       root(std::make_unique<Node>(Node::directory(dir_path))) {
   buildIndex(*root, true);
+  generate_hash();
 }
 
 DirectoryTree::DirectoryTree(fs::path dir_path, std::unique_ptr<Node> node)
@@ -133,6 +132,19 @@ void DirectoryTree::buildIndex(Node& node, bool change_path) {
       buildIndex(*child, change_path);
     }
   }
+}
+
+void DirectoryTree::generate_hash() {
+  std::function<void(Node&)> loop = [&](Node& node) {
+    if (node.type == NodeType::File)
+      node.generate_hash(this->root_path);
+    else {
+      for (auto& child : children(node)) {
+        loop(*child.get());
+      }
+    }
+  };
+  loop(*this->root);
 }
 
 // ---------- Node Snapshot ----------
@@ -166,8 +178,8 @@ NodeDiff NodeDiff::modified(const Node& old_node, const Node& new_node) {
 
 // ---------- Diff ----------
 
-std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
-                               DirectoryTree& new_tree) {
+std::vector<NodeDiff> diffTree(const DirectoryTree& old_tree,
+                               const DirectoryTree& new_tree) {
   std::vector<NodeDiff> nodeDiffVec;
 
   // Function to recursively loop through each node of DirectoryTree
@@ -190,18 +202,8 @@ std::vector<NodeDiff> diffTree(DirectoryTree& old_tree,
               if (old_it_meta.size != new_it_meta.size) {
                 nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
               } else {
-                // Only compare hashes when both are locally accessible.
-                // Peer trees received over the wire may not have hashes, so
-                // only generate for old_tree and skip if peer hash is absent.
-                (*old_it)->generate_hash(old_tree.root_path);
-                if (old_it_meta.file_hash.has_value() &&
-                    new_it_meta.file_hash.has_value()) {
-                  if (old_it_meta.file_hash != new_it_meta.file_hash)
-                    nodeDiffVec.push_back(
-                        NodeDiff::modified(**old_it, **new_it));
-                }
-                // FIX: Make hash generation compulsory
-                // hash absent on peer side + equal sizes → treat as identical
+                if (old_it_meta.file_hash != new_it_meta.file_hash)
+                  nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
               }
             } else {
               diffLoop(old_it->get(), new_it->get());

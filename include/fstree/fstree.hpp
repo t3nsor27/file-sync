@@ -57,6 +57,7 @@ struct DirectoryTree {
 
  private:
   void buildIndex(Node&, bool change_path = false);
+  void generate_hash();
 };
 
 enum class ChangeType : uint8_t { Added, Deleted, Modified };
@@ -82,7 +83,7 @@ struct NodeDiff {
   static NodeDiff modified(const Node&, const Node&);
 };
 
-std::vector<NodeDiff> diffTree(DirectoryTree&, DirectoryTree&);
+std::vector<NodeDiff> diffTree(const DirectoryTree&, const DirectoryTree&);
 
 // TODO: Instead of printing return a std::string
 void printTree(Node&, std::string prefix = "");
