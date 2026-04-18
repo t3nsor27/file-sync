@@ -94,6 +94,7 @@ class Peer : public std::enable_shared_from_this<Peer> {
  public:
   using OnAccept  = std::function<void(std::weak_ptr<Session>)>;
   using OnConnect = std::function<void(std::weak_ptr<Session>)>;
+  using OnError   = std::function<void(const boost::system::error_code&)>;
 
   explicit Peer(uint16_t);
 
@@ -104,7 +105,10 @@ class Peer : public std::enable_shared_from_this<Peer> {
   void doAccept(OnAccept);
   void closeAcceptor();
 
+  // Connect without error callback (legacy — silently drops errors)
   void doResolveAndConnect(const std::string&, uint16_t, OnConnect);
+  // Connect with error callback — on_error is called on resolve or TCP failure
+  void doResolveAndConnect(const std::string&, uint16_t, OnConnect, OnError);
   void clearSessions();
 
   uint64_t id();

@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <boost/asio.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -8,6 +10,7 @@
 #include <ftxui/screen/screen.hpp>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +18,7 @@
 #include "./include/net/peer.hpp"
 
 namespace asio = boost::asio;
+using namespace asio::experimental::awaitable_operators;
 std::pair<std::string, asio::ip::address> GetHostInfo() {
   boost::asio::io_context io;
 
@@ -59,10 +63,9 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
   return info;
 }
 
+// FIX: The refresh button doesn't get updated tree from the remote peer
 // TODO: Separate sync_state for each peer
-// TODO: Implement the timeout feature
 // TODO: Implement parallel sending and receiving files
-// TODO: Implement Error handeling
 // TODO: Change endian.h to boost-endian
 int main(int argc, char* argv[]) {
   using namespace ftxui;
@@ -118,6 +121,28 @@ int main(int argc, char* argv[]) {
   };
   SyncState sync_state;
 
+  // -------------------------------------------------------------------------------------------------
+  // ERROR STATE  (written from IO thread, shown as modal in UI thread)
+  // -------------------------------------------------------------------------------------------------
+  struct ErrorState {
+    std::mutex mtx;
+    bool visible      = false;
+    std::string title = "Error";
+    std::string message;
+  };
+  auto error_state = std::make_shared<ErrorState>();
+
+  // Post an error from any thread — shows the modal and triggers a UI refresh.
+  auto post_error = [&](std::string title, std::string msg) {
+    {
+      std::lock_guard<std::mutex> lk(error_state->mtx);
+      error_state->visible = true;
+      error_state->title   = std::move(title);
+      error_state->message = std::move(msg);
+    }
+    screen.PostEvent(Event::Custom);
+  };
+
   std::function<void(std::size_t, std::shared_ptr<net::Session>)>
       start_refresh_listener;  // Forward declaration
 
@@ -130,31 +155,44 @@ int main(int argc, char* argv[]) {
       asio::co_spawn(
           peer->getExecutor(),
           [&, session]() -> asio::awaitable<void> {
-            co_await session->sendHello({peer->id(), hostname});
-            auto hello = co_await session->receiveHello();
-            auto info  = ExtractPeerInfo(session, hello);
+            try {
+              co_await session->sendHello({peer->id(), hostname});
+              auto hello = co_await session->receiveHello();
+              auto info  = ExtractPeerInfo(session, hello);
 
-            {
-              std::lock_guard<std::mutex> lock(peer_mutex);
-              for (auto& existing : peer_list) {
-                if (existing.peer_id == hello.peer_id) {
-                  session->close();
-                  co_return;
+              {
+                std::lock_guard<std::mutex> lock(peer_mutex);
+                for (auto& existing : peer_list) {
+                  if (existing.peer_id == hello.peer_id) {
+                    session->close();
+                    co_return;
+                  }
                 }
               }
+
+              co_await session->sendTree(*local_peer.tree);
+              info.tree = std::make_shared<fstree::DirectoryTree>(
+                  co_await session->receiveTree());
+
+              {
+                std::lock_guard<std::mutex> lock(peer_mutex);
+                peer_list.push_back(std::move(info));
+              }
+
+              start_refresh_listener(peer_list.size() - 1, session);
+              screen.PostEvent(Event::Custom);
+            } catch (const boost::system::system_error& e) {
+              session->close();
+              post_error("Incoming Connection Error",
+                         std::string("Handshake with incoming peer failed: ") +
+                             e.what());
+            } catch (const std::exception& e) {
+              session->close();
+              post_error("Incoming Connection Error", e.what());
+            } catch (...) {
+              session->close();
+              // Silently drop truly unknown errors on accept side
             }
-
-            co_await session->sendTree(*local_peer.tree);
-            info.tree = std::make_shared<fstree::DirectoryTree>(
-                co_await session->receiveTree());
-
-            {
-              std::lock_guard<std::mutex> lock(peer_mutex);
-              peer_list.push_back(std::move(info));
-            }
-
-            start_refresh_listener(peer_list.size() - 1, session);
-            screen.PostEvent(Event::Custom);
           },
           asio::detached);
     }
@@ -285,6 +323,21 @@ int main(int argc, char* argv[]) {
       return false;
     if (validatePort(peer_port) != FieldState::Valid)
       return false;
+    if (!peer_timeout.empty()) {
+      bool valid_digits =
+          std::all_of(peer_timeout.begin(), peer_timeout.end(), [](char c) {
+            return std::isdigit((unsigned char)c);
+          });
+      if (!valid_digits)
+        return false;
+      try {
+        long v = std::stol(peer_timeout);
+        if (v < 1 || v > 3600)
+          return false;
+      } catch (...) {
+        return false;
+      }
+    }
     uint16_t p = static_cast<uint16_t>(std::stoi(peer_port));
     std::lock_guard<std::mutex> lock(peer_mutex);
     return !isDuplicate(peer_ip, p);
@@ -297,6 +350,21 @@ int main(int argc, char* argv[]) {
       return "  Invalid IP address";
     if (port_st == FieldState::Invalid)
       return "  Port must be 1 – 65535";
+    if (!peer_timeout.empty()) {
+      bool valid_digits =
+          std::all_of(peer_timeout.begin(), peer_timeout.end(), [](char c) {
+            return std::isdigit((unsigned char)c);
+          });
+      if (!valid_digits)
+        return "  Timeout must be a number (seconds)";
+      try {
+        long v = std::stol(peer_timeout);
+        if (v < 1 || v > 3600)
+          return "  Timeout must be 1 – 3600 s";
+      } catch (...) {
+        return "  Timeout must be a number (seconds)";
+      }
+    }
     if (ip_st == FieldState::Valid && port_st == FieldState::Valid) {
       uint16_t p = static_cast<uint16_t>(std::stoi(peer_port));
       std::lock_guard<std::mutex> lock(peer_mutex);
@@ -314,40 +382,112 @@ int main(int argc, char* argv[]) {
             if (!connectReady())
               return;
             uint16_t p = static_cast<uint16_t>(std::stoi(peer_port));
+            // Resolve timeout — default to 5 s if field is empty
+            int timeout_secs = 5;
+            if (!peer_timeout.empty()) {
+              try {
+                timeout_secs = std::stoi(peer_timeout);
+              } catch (...) {
+              }
+            }
+
             peer->doResolveAndConnect(
-                peer_ip, p, [&](std::weak_ptr<net::Session> ws) {
+                peer_ip,
+                p,
+                [&, timeout_secs](std::weak_ptr<net::Session> ws) {
                   if (auto session = ws.lock()) {
                     asio::co_spawn(
                         peer->getExecutor(),
-                        [&, session]() -> asio::awaitable<void> {
-                          auto hello = co_await session->receiveHello();
-                          co_await session->sendHello({peer->id(), hostname});
-                          auto info = ExtractPeerInfo(session, hello);
+                        [&, session, timeout_secs]() -> asio::awaitable<void> {
+                          // Helper: run the handshake coroutine, optionally
+                          // racing it against a steady_timer deadline.
+                          auto do_handshake =
+                              [&, session]() -> asio::awaitable<void> {
+                            auto hello = co_await session->receiveHello();
+                            co_await session->sendHello({peer->id(), hostname});
+                            auto info = ExtractPeerInfo(session, hello);
 
-                          {
-                            std::lock_guard<std::mutex> lock(peer_mutex);
-                            for (auto& existing : peer_list) {
-                              if (existing.peer_id == hello.peer_id) {
-                                session->close();
-                                co_return;
+                            {
+                              std::lock_guard<std::mutex> lock(peer_mutex);
+                              for (auto& existing : peer_list) {
+                                if (existing.peer_id == hello.peer_id) {
+                                  session->close();
+                                  co_return;
+                                }
                               }
                             }
+
+                            info.tree = std::make_shared<fstree::DirectoryTree>(
+                                co_await session->receiveTree());
+                            co_await session->sendTree(*local_peer.tree);
+
+                            {
+                              std::lock_guard<std::mutex> lock(peer_mutex);
+                              peer_list.push_back(std::move(info));
+                            }
+
+                            start_refresh_listener(peer_list.size() - 1,
+                                                   session);
+                            screen.PostEvent(Event::Custom);
+                          };
+
+                          try {
+                            // Always race the handshake against the timeout.
+                            // Snapshot target address before we potentially
+                            // close the socket on timeout.
+                            std::string target_addr;
+                            try {
+                              target_addr = session->socket()
+                                                .remote_endpoint()
+                                                .address()
+                                                .to_string();
+                            } catch (...) {
+                              target_addr = peer_ip;
+                            }
+
+                            asio::steady_timer timer(
+                                co_await asio::this_coro::executor);
+                            timer.expires_after(
+                                std::chrono::seconds(timeout_secs));
+
+                            auto result = co_await (
+                                do_handshake() ||
+                                timer.async_wait(asio::use_awaitable));
+
+                            if (result.index() == 1) {
+                              // Timer won — timeout
+                              session->close();
+                              post_error("Connection Timed Out",
+                                         "Could not complete handshake with " +
+                                             target_addr + " within " +
+                                             std::to_string(timeout_secs) +
+                                             " s.");
+                            }
+                            // index == 0 means handshake completed normally
+                          } catch (const boost::system::system_error& e) {
+                            session->close();
+                            post_error("Connection Error",
+                                       std::string("Network error during "
+                                                   "handshake: ") +
+                                           e.what());
+                          } catch (const std::exception& e) {
+                            session->close();
+                            post_error("Handshake Failed", e.what());
+                          } catch (...) {
+                            session->close();
+                            post_error("Connection Error",
+                                       "An unknown error occurred while "
+                                       "connecting.");
                           }
-
-                          info.tree = std::make_shared<fstree::DirectoryTree>(
-                              co_await session->receiveTree());
-                          co_await session->sendTree(*local_peer.tree);
-
-                          {
-                            std::lock_guard<std::mutex> lock(peer_mutex);
-                            peer_list.push_back(std::move(info));
-                          }
-
-                          start_refresh_listener(peer_list.size() - 1, session);
-                          screen.PostEvent(Event::Custom);
                         },
                         asio::detached);
                   }
+                },
+                // on_error: called when resolve or TCP connect itself fails
+                [&](const boost::system::error_code& ec) {
+                  post_error("Connection Failed",
+                             "Could not connect to " + peer_ip + ":" +
+                                 peer_port + ".\n" + ec.message());
                 });
           },
       .transform =
@@ -368,13 +508,19 @@ int main(int argc, char* argv[]) {
     return validatePort(peer_port);
   });
   auto peer_timeout_input =
-      peer_input_validated(&peer_timeout, "Timeout", [&]() {
+      peer_input_validated(&peer_timeout, "Timeout (s)", [&]() {
         if (peer_timeout.empty())
-          return FieldState::Empty;
+          return FieldState::Empty;  // empty = default 5 s
         for (char c : peer_timeout)
           if (!std::isdigit(static_cast<unsigned char>(c)))
             return FieldState::Invalid;
-        return FieldState::Valid;
+        try {
+          long v = std::stol(peer_timeout);
+          return (v >= 1 && v <= 3600) ? FieldState::Valid
+                                       : FieldState::Invalid;
+        } catch (...) {
+          return FieldState::Invalid;
+        }
       });
 
   auto peer_container = Container::Vertical({
@@ -598,8 +744,19 @@ int main(int argc, char* argv[]) {
                     co_await session->sendPacketType(
                         net::Session::PacketType::SyncRequest);
                     co_await session->sendTaggedTree(*local_peer.tree);
+                  } catch (const boost::system::system_error& e) {
+                    sync_state.phase.store(Phase::Error);
+                    post_error("Sync Failed",
+                               std::string("Failed to send sync request: ") +
+                                   e.what());
+                  } catch (const std::exception& e) {
+                    sync_state.phase.store(Phase::Error);
+                    post_error("Sync Failed", e.what());
                   } catch (...) {
                     sync_state.phase.store(Phase::Error);
+                    post_error(
+                        "Sync Failed",
+                        "An unknown error occurred while starting sync.");
                     screen.PostEvent(Event::Custom);
                   }
                 },
@@ -1006,9 +1163,40 @@ int main(int argc, char* argv[]) {
               }
               // Unknown tags silently skipped — forward-compatible
             }
-          } catch (...) {
+          } catch (const boost::system::system_error& e) {
             // Session closed or I/O error — exit listener cleanly.
-            // Also remove this peer from the list so the UI stays consistent.
+            {
+              std::lock_guard<std::mutex> lock(peer_mutex);
+              remove_peer_by_session(session);
+            }
+            auto ph = sync_state.phase.load();
+            if (ph == SyncState::Phase::SyncingTrees ||
+                ph == SyncState::Phase::SyncingFiles) {
+              sync_state.phase.store(SyncState::Phase::Error);
+              post_error(
+                  "Sync Interrupted",
+                  std::string("Connection lost during sync: ") + e.what());
+            } else if (ph != SyncState::Phase::Idle &&
+                       ph != SyncState::Phase::Done) {
+              post_error(
+                  "Connection Lost",
+                  std::string("Peer disconnected unexpectedly: ") + e.what());
+            }
+            screen.PostEvent(Event::Custom);
+          } catch (const std::exception& e) {
+            {
+              std::lock_guard<std::mutex> lock(peer_mutex);
+              remove_peer_by_session(session);
+            }
+            auto ph = sync_state.phase.load();
+            if (ph == SyncState::Phase::SyncingTrees ||
+                ph == SyncState::Phase::SyncingFiles) {
+              sync_state.phase.store(SyncState::Phase::Error);
+              post_error("Sync Error", e.what());
+            }
+            screen.PostEvent(Event::Custom);
+          } catch (...) {
+            // Truly unknown error — remove peer silently
             {
               std::lock_guard<std::mutex> lock(peer_mutex);
               remove_peer_by_session(session);
@@ -1024,11 +1212,61 @@ int main(int argc, char* argv[]) {
   };
 
   // -------------------------------------------------------------------------------------------------
+  // ERROR MODAL
+  // -------------------------------------------------------------------------------------------------
+
+  auto error_modal_component = [&]() -> Component {
+    auto dismiss_button = Button({
+        .label = "  OK  ",
+        .on_click =
+            [&]() {
+              std::lock_guard<std::mutex> lk(error_state->mtx);
+              error_state->visible = false;
+            },
+        .transform =
+            [](EntryState state) {
+              auto btn = text("  OK  ") | center | bold;
+              return state.focused ? btn | borderDouble | color(Color::White)
+                                   : btn | borderLight | color(Color::White);
+            },
+    });
+
+    return Renderer(dismiss_button, [&, dismiss_button]() -> Element {
+      std::string title, message;
+      {
+        std::lock_guard<std::mutex> lk(error_state->mtx);
+        title   = error_state->title;
+        message = error_state->message;
+      }
+
+      // Wrap long message lines manually for terminal display
+      Elements msg_lines;
+      std::istringstream ss(message);
+      std::string line;
+      while (std::getline(ss, line))
+        msg_lines.push_back(text(line));
+
+      return vbox({
+                 hbox({
+                     text(" ⚠  ") | color(Color::Red) | bold,
+                     text(title) | bold | color(Color::Red),
+                 }) | center,
+                 separatorLight(),
+                 vbox(std::move(msg_lines)) | color(Color::White),
+                 separator(),
+                 dismiss_button->Render() | center,
+             }) |
+             borderHeavy | color(Color::Red) | size(WIDTH, GREATER_THAN, 40) |
+             bgcolor(Color::Palette256(16));
+    });
+  }();
+
+  // -------------------------------------------------------------------------------------------------
   // MAIN UI
   // -------------------------------------------------------------------------------------------------
 
   // clang-format off
-  auto ui = Container::Vertical({
+  auto base_ui = Container::Vertical({
     status_bar_renderer,
     Container::Horizontal({
       Container::Vertical({
@@ -1038,6 +1276,8 @@ int main(int argc, char* argv[]) {
       diff_renderer | flex,
     }) | flex
   }) | bgcolor(bg_color);
+
+  auto ui = Modal(base_ui, error_modal_component, &error_state->visible);
   // clang-format on
 
   screen.Loop(ui);

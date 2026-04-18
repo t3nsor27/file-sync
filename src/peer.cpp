@@ -658,29 +658,44 @@ void Peer::closeAcceptor() {
   acceptor_.close(ignored);
 }
 
-// Resolver
+// Resolver (legacy — silent on error)
 void Peer::doResolveAndConnect(const std::string& host,
                                uint16_t port,
                                OnConnect on_connect) {
+  doResolveAndConnect(host, port, std::move(on_connect), nullptr);
+}
+
+// Resolver with error callback
+void Peer::doResolveAndConnect(const std::string& host,
+                               uint16_t port,
+                               OnConnect on_connect,
+                               OnError on_error) {
   resolver_.async_resolve(
       host,
       std::to_string(port),
-      [self = shared_from_this(), on_connect = std::move(on_connect)](
-          boost::system::error_code ec, tcp::resolver::results_type results) {
-        if (ec)
+      [self = shared_from_this(),
+       on_connect = std::move(on_connect),
+       on_error   = std::move(on_error)](
+          boost::system::error_code ec,
+          tcp::resolver::results_type results) mutable {
+        if (ec) {
+          if (on_error) on_error(ec);
           return;
+        }
         auto socket = std::make_shared<tcp::socket>(self->io_);
-        asio::async_connect(*socket,
-                            results,
-                            [self, socket, on_connect = std::move(on_connect)](
-                                boost::system::error_code ec, auto) mutable {
-                              if (ec) {
-                                return;
-                              }
-                              auto session =
-                                  self->createSession(std::move(*socket));
-                              on_connect(std::weak_ptr<Session>(session));
-                            });
+        asio::async_connect(
+            *socket, results,
+            [self, socket,
+             on_connect = std::move(on_connect),
+             on_error   = std::move(on_error)](
+                boost::system::error_code ec, auto) mutable {
+              if (ec) {
+                if (on_error) on_error(ec);
+                return;
+              }
+              auto session = self->createSession(std::move(*socket));
+              on_connect(std::weak_ptr<Session>(session));
+            });
       });
 }
 
