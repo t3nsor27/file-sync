@@ -63,7 +63,6 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
   return info;
 }
 
-// FIX: The refresh button doesn't get updated tree from the remote peer
 // TODO: Separate sync_state for each peer
 // TODO: Implement parallel sending and receiving files
 // TODO: Change endian.h to boost-endian
@@ -974,7 +973,9 @@ int main(int argc, char* argv[]) {
                 auto pt2 = co_await session->receivePacketType();
                 if (pt2 != net::Session::PacketType::Tree)
                   break;
-                auto new_tree = co_await session->receiveTreePayload();
+                auto new_tree   = co_await session->receiveTreePayload();
+                local_peer.tree = std::make_shared<fstree::DirectoryTree>(
+                    local_peer.tree->root_path);
                 co_await session->sendTaggedTree(*local_peer.tree);
 
                 {
