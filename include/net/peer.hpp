@@ -1,6 +1,6 @@
 #pragma once
 
-#include <endian.h>
+#include <boost/endian/conversion.hpp>
 #include <atomic>
 #include <boost/asio.hpp>
 #include <cstdint>

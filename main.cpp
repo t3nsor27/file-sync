@@ -65,7 +65,6 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
 
 // TODO: Separate sync_state for each peer
 // TODO: Implement parallel sending and receiving files
-// TODO: Change endian.h to boost-endian
 int main(int argc, char* argv[]) {
   using namespace ftxui;
 

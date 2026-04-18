@@ -1,5 +1,5 @@
 #include "../include/net/peer.hpp"
-#include <endian.h>
+#include <boost/endian/conversion.hpp>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -27,7 +27,7 @@ asio::awaitable<void> Session::sendTree(const fstree::DirectoryTree& tree) {
   // We own this session now
   try {
     buffer_  = fstree::serializeTree(tree);
-    size_be_ = htobe64(buffer_.size());
+    size_be_ = boost::endian::native_to_big(static_cast<uint64_t>(buffer_.size()));
 
     std::vector<asio::const_buffer> buffers{
         asio::buffer(&size_be_, sizeof(size_be_)), asio::buffer(buffer_)};
@@ -58,7 +58,7 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTree() {
         asio::buffer(&size_be_, sizeof(size_be_)),
         asio::bind_executor(strand_, asio::use_awaitable));
 
-    auto size = be64toh(size_be_);
+    auto size = boost::endian::big_to_native(size_be_);
     if (size > MAX_TREE_SIZE)
       throw std::runtime_error("Tree payload too large.\n");
     buffer_.resize(size);
@@ -88,7 +88,7 @@ asio::awaitable<void> Session::sendTaggedTree(
 
   try {
     buffer_  = fstree::serializeTree(tree);
-    size_be_ = htobe64(buffer_.size());
+    size_be_ = boost::endian::native_to_big(static_cast<uint64_t>(buffer_.size()));
 
     uint8_t tag = static_cast<uint8_t>(PacketType::Tree);
 
@@ -118,7 +118,7 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTreePayload() {
         asio::buffer(&size_be_, sizeof(size_be_)),
         asio::bind_executor(strand_, asio::use_awaitable));
 
-    auto size = be64toh(size_be_);
+    auto size = boost::endian::big_to_native(size_be_);
     if (size > MAX_TREE_SIZE)
       throw std::runtime_error("Tree payload too large.\n");
     buffer_.resize(size);
@@ -166,11 +166,11 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
 
   auto header_buf         = header.str();
   uint64_t header_size    = header_buf.size();
-  uint64_t header_size_be = htobe64(header_size);
+  uint64_t header_size_be = boost::endian::native_to_big(header_size);
 
   // --- Header Debug ---
   // std::cout << "\nSend header ->"
-  //           << "\nSize: " << be64toh(header_size_be)
+  //           << "\nSize: " << boost::endian::big_to_native(header_size_be)
   //           << "\nrel_path: " << node.path.generic_string()
   //           << "\nfile_size: " << file_size << "\nBuffer: ";  // debug
   // for (auto& v : header_buf) {
@@ -198,7 +198,7 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
     if (!file)
       throw std::runtime_error("file read failed");
 
-    uint32_t be_size = htobe32(to_read);
+    uint32_t be_size = boost::endian::native_to_big(to_read);
 
     co_await asio::async_write(
         socket_, asio::buffer(&be_size, sizeof(be_size)), asio::use_awaitable);
@@ -227,7 +227,7 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree,
                             asio::buffer(&hdr_size_be, sizeof(hdr_size_be)),
                             asio::use_awaitable);
 
-  uint64_t hdr_size = be64toh(hdr_size_be);
+  uint64_t hdr_size = boost::endian::big_to_native(hdr_size_be);
   // std::cout << "Received header size: " << hdr_size << "\n";
 
   if (hdr_size > MAX_FILE_CHUNK_SIZE)
@@ -268,7 +268,7 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree,
         socket_,
         asio::buffer(&chunk_size_be, sizeof(chunk_size_be)),
         asio::use_awaitable);
-    uint32_t chunk_size = be32toh(chunk_size_be);
+    uint32_t chunk_size = boost::endian::big_to_native(chunk_size_be);
 
     if (chunk_size > MAX_FILE_CHUNK_SIZE || chunk_size == 0)
       throw std::runtime_error("chunk too large");
@@ -307,7 +307,7 @@ asio::awaitable<void> Session::sendHello(const HelloPacket& hello) {
 
     auto header_buf         = header.str();
     uint64_t header_size    = header_buf.size();
-    uint64_t header_size_be = htobe64(header_size);
+    uint64_t header_size_be = boost::endian::native_to_big(header_size);
 
     // --- Header Debug ---
     // std::cerr << "sendHello: header_size=" << header_size
@@ -348,7 +348,7 @@ asio::awaitable<Session::HelloPacket> Session::receiveHello() {
         socket_,
         asio::buffer(&header_size_be, sizeof(header_size_be)),
         asio::bind_executor(strand_, asio::use_awaitable));
-    auto header_size = be64toh(header_size_be);
+    auto header_size = boost::endian::big_to_native(header_size_be);
     if (header_size > 1024)
       throw std::runtime_error("hello packet too large");
 
@@ -450,7 +450,7 @@ asio::awaitable<void> Session::sendDeleteNotice(
     std::ostringstream os;
     fstree::wire::write_string(os, rel_path.generic_string());
     auto buf       = os.str();
-    uint64_t sz_be = htobe64(buf.size());
+    uint64_t sz_be = boost::endian::native_to_big(buf.size());
 
     uint8_t tag = static_cast<uint8_t>(PacketType::DeleteFile);
     std::vector<asio::const_buffer> buffers{
@@ -477,7 +477,7 @@ asio::awaitable<void> Session::sendCreateDir(
     std::ostringstream os;
     fstree::wire::write_string(os, rel_path.generic_string());
     auto buf       = os.str();
-    uint64_t sz_be = htobe64(buf.size());
+    uint64_t sz_be = boost::endian::native_to_big(buf.size());
     uint8_t tag    = static_cast<uint8_t>(PacketType::CreateDir);
     std::vector<asio::const_buffer> buffers{
         asio::buffer(&tag, 1),
@@ -514,7 +514,7 @@ asio::awaitable<void> Session::sendSyncHeader(uint32_t total_ops) {
     co_await asio::post(strand_, asio::use_awaitable);
   try {
     uint8_t tag = static_cast<uint8_t>(PacketType::SyncHeader);
-    uint32_t be = htobe32(total_ops);
+    uint32_t be = boost::endian::native_to_big(total_ops);
     std::vector<asio::const_buffer> bufs{
         asio::buffer(&tag, 1),
         asio::buffer(&be, sizeof(be)),
@@ -542,7 +542,7 @@ asio::awaitable<uint32_t> Session::receiveSyncHeader() {
         asio::buffer(&be, sizeof(be)),
         asio::bind_executor(strand_, asio::use_awaitable));
     busy_.store(false);
-    co_return be32toh(be);
+    co_return boost::endian::big_to_native(be);
   } catch (...) {
     busy_.store(false);
     close();
@@ -562,7 +562,7 @@ asio::awaitable<std::filesystem::path> Session::receiveRelPath() {
         socket_,
         asio::buffer(&sz_be, sizeof(sz_be)),
         asio::bind_executor(strand_, asio::use_awaitable));
-    uint64_t sz = be64toh(sz_be);
+    uint64_t sz = boost::endian::big_to_native(sz_be);
     if (sz > 4096)
       throw std::runtime_error("path too long");
 
