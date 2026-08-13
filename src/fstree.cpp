@@ -199,15 +199,16 @@ std::vector<NodeDiff> diffTree(const DirectoryTree& old_tree,
             } else if ((*old_it)->type == NodeType::File) {
               const auto& old_it_meta = std::get<FileMeta>((*old_it)->data);
               const auto& new_it_meta = std::get<FileMeta>((*new_it)->data);
-              if (old_it_meta.size != new_it_meta.size) {
+
+              if (old_it_meta.size != new_it_meta.size)
                 nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
-              } else {
-                if (old_it_meta.file_hash != new_it_meta.file_hash)
-                  nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
-              }
+              else if (old_it_meta.file_hash != new_it_meta.file_hash)
+                nodeDiffVec.push_back(NodeDiff::modified(**old_it, **new_it));
+
             } else {
               diffLoop(old_it->get(), new_it->get());
             }
+
             old_it++;
             new_it++;
           } else if ((*old_it)->name < (*new_it)->name) {

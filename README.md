@@ -21,7 +21,7 @@ A terminal-based peer-to-peer file synchronization tool for local networks. Conn
 
 ## Demo
 
-https://github.com/user-attachments/assets/3230731c-8a5c-48a4-93d8-86a8884c6d48
+<https://github.com/user-attachments/assets/3230731c-8a5c-48a4-93d8-86a8884c6d48>
 
 ---
 
@@ -122,7 +122,15 @@ Once running, use the TUI to:
 
 ---
 
-## Known Limitations
+## Known Limitations and Future Work
 
 - No authentication or encryption on the wire
 - Sync target directory must exist before starting
+- Spin Lock used in `Session::sendFile` and `Session::sendTree`
+- No Block-Level Delta Sync
+- No asynchronous disk I/O thread pool
+- Implement UDP broadcasting
+- Parallel file chunk downloading
+- Inclusion/Exclusion Rules; support `.gitignore` style wildcard patterns
+- Make File hash compulsory
+- Since `wire.cpp` I/O primitives use big endian as default; remove manual conversion of data in `peer.cpp`

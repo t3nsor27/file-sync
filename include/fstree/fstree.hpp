@@ -21,6 +21,7 @@ enum class NodeType : uint8_t { File, Directory };
 
 struct FileMeta {
   uint64_t size;
+  // TODO: Make hash compulsory
   std::optional<Hash> file_hash;
 };
 

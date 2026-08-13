@@ -1,11 +1,14 @@
 #pragma once
 
+#include <boost/endian.hpp>
 #include <cstdint>
 #include <istream>
 #include <ostream>
 #include <string>
 
 namespace fstree::wire {
+
+constexpr uint32_t MAX_WIRE_STRING_LEN = 64 * 1024;  // 64 KB
 
 void write_u8(std::ostream&, uint8_t);
 void write_u32(std::ostream&, uint32_t);
