@@ -209,8 +209,12 @@ int main(int argc, char* argv[]) {
     };
 
     std::string separator = "  ";
-    std::string peer_no =
-        peer_list.size() > 0 ? std::to_string(peer_list.size()) : "no";
+    std::string peer_no;
+
+    {
+      std::lock_guard<std::mutex> lock(peer_mutex);
+      peer_no = peer_list.size() > 0 ? std::to_string(peer_list.size()) : "no";
+    }
 
     return hbox({
                text("file-sync") | color(Color::White) | bold,
