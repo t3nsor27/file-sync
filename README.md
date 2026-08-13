@@ -134,3 +134,4 @@ Once running, use the TUI to:
 - Inclusion/Exclusion Rules; support `.gitignore` style wildcard patterns
 - Make File hash compulsory
 - Since `wire.cpp` I/O primitives use big endian as default; remove manual conversion of data in `peer.cpp`
+- Abstract the main event loop inside `main.cpp`.
