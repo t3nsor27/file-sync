@@ -108,6 +108,7 @@ std::vector<std::unique_ptr<Node>>& children(Node& n) {
 
 // ---------- Directory Tree ----------
 
+// Local tree constructor
 DirectoryTree::DirectoryTree(fs::path dir_path)
     : root_path(dir_path),
       root(std::make_unique<Node>(Node::directory(dir_path))) {
@@ -115,6 +116,7 @@ DirectoryTree::DirectoryTree(fs::path dir_path)
   generate_hash();
 }
 
+// Remote tree constructor
 DirectoryTree::DirectoryTree(fs::path dir_path, std::unique_ptr<Node> node)
     : root_path(dir_path),
       root(std::move(node)) {

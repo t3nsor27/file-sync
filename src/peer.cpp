@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+#include "boost/asio/buffer.hpp"
 
 namespace net {
 Session::Session(tcp::socket socket, OnClose on_close)
@@ -26,8 +27,9 @@ asio::awaitable<void> Session::sendTree(const fstree::DirectoryTree& tree) {
 
   // We own this session now
   try {
-    buffer_  = fstree::serializeTree(tree);
-    size_be_ = boost::endian::native_to_big(static_cast<uint64_t>(buffer_.size()));
+    buffer_ = fstree::serializeTree(tree);
+    size_be_ =
+        boost::endian::native_to_big(static_cast<uint64_t>(buffer_.size()));
 
     std::vector<asio::const_buffer> buffers{
         asio::buffer(&size_be_, sizeof(size_be_)), asio::buffer(buffer_)};
@@ -77,18 +79,19 @@ asio::awaitable<fstree::DirectoryTree> Session::receiveTree() {
     close();
     throw;
   }
-  busy_.store(false);
 }
 
 asio::awaitable<void> Session::sendTaggedTree(
     const fstree::DirectoryTree& tree) {
   co_await asio::dispatch(strand_, asio::use_awaitable);
+
   while (busy_.exchange(true))
     co_await asio::post(strand_, asio::use_awaitable);
 
   try {
-    buffer_  = fstree::serializeTree(tree);
-    size_be_ = boost::endian::native_to_big(static_cast<uint64_t>(buffer_.size()));
+    buffer_ = fstree::serializeTree(tree);
+    size_be_ =
+        boost::endian::native_to_big(static_cast<uint64_t>(buffer_.size()));
 
     uint8_t tag = static_cast<uint8_t>(PacketType::Tree);
 
@@ -108,33 +111,7 @@ asio::awaitable<void> Session::sendTaggedTree(
 }
 
 asio::awaitable<fstree::DirectoryTree> Session::receiveTreePayload() {
-  co_await asio::dispatch(strand_, asio::use_awaitable);
-  while (busy_.exchange(true))
-    co_await asio::post(strand_, asio::use_awaitable);
-
-  try {
-    co_await asio::async_read(
-        socket_,
-        asio::buffer(&size_be_, sizeof(size_be_)),
-        asio::bind_executor(strand_, asio::use_awaitable));
-
-    auto size = boost::endian::big_to_native(size_be_);
-    if (size > MAX_TREE_SIZE)
-      throw std::runtime_error("Tree payload too large.\n");
-    buffer_.resize(size);
-
-    co_await asio::async_read(
-        socket_,
-        asio::buffer(buffer_),
-        asio::bind_executor(strand_, asio::use_awaitable));
-
-    busy_.store(false);
-    co_return fstree::deserializeTree(buffer_);
-  } catch (...) {
-    busy_.store(false);
-    close();
-    throw;
-  }
+  co_return co_await receiveTree();
 }
 
 asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
@@ -178,23 +155,21 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
   // }
   // std::cout << "\n";
 
-  co_await asio::async_write(
-      socket_,
+  std::array<asio::const_buffer, 2> header_buffers{
       asio::buffer(&header_size_be, sizeof(header_size_be)),
-      asio::use_awaitable);
+      asio::buffer(header_buf)};
 
-  co_await asio::async_write(
-      socket_, asio::buffer(header_buf), asio::use_awaitable);
+  co_await asio::async_write(socket_, header_buffers, asio::use_awaitable);
 
   // Send chunk
-  std::vector<char> buffer(chunk_size);
+  std::vector<char> file_buffer(chunk_size);
   uint64_t remaining = file_size;
 
   while (remaining > 0) {
     uint32_t to_read =
         static_cast<uint32_t>(std::min<uint64_t>(remaining, chunk_size));
 
-    file.read(buffer.data(), to_read);
+    file.read(file_buffer.data(), to_read);
     if (!file)
       throw std::runtime_error("file read failed");
 
@@ -203,8 +178,9 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
     co_await asio::async_write(
         socket_, asio::buffer(&be_size, sizeof(be_size)), asio::use_awaitable);
 
-    co_await asio::async_write(
-        socket_, asio::buffer(buffer.data(), to_read), asio::use_awaitable);
+    co_await asio::async_write(socket_,
+                               asio::buffer(file_buffer.data(), to_read),
+                               asio::use_awaitable);
 
     remaining -= to_read;
   }
@@ -233,11 +209,11 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree,
   if (hdr_size > MAX_FILE_CHUNK_SIZE)
     throw std::runtime_error("header too large");
 
-  std::vector<uint8_t> hdr_buf(hdr_size);
+  std::string hdr_buf(hdr_size, '\0');
   co_await asio::async_read(
       socket_, asio::buffer(hdr_buf), asio::use_awaitable);
 
-  std::istringstream hdr_stream(std::string(hdr_buf.begin(), hdr_buf.end()));
+  std::istringstream hdr_stream(std::move(hdr_buf), std::ios::binary);
 
   fs::path rel_path  = fstree::wire::read_string(hdr_stream);
   uint64_t file_size = fstree::wire::read_u64(hdr_stream);
@@ -262,22 +238,25 @@ asio::awaitable<void> Session::receiveFile(fstree::DirectoryTree& tree,
   // Receive chunk
   uint64_t received = 0;
 
+  std::vector<char> buffer(MAX_FILE_CHUNK_SIZE);
+
   while (received < file_size) {
     uint32_t chunk_size_be = 0;
     co_await asio::async_read(
         socket_,
         asio::buffer(&chunk_size_be, sizeof(chunk_size_be)),
         asio::use_awaitable);
+
     uint32_t chunk_size = boost::endian::big_to_native(chunk_size_be);
 
     if (chunk_size > MAX_FILE_CHUNK_SIZE || chunk_size == 0)
-      throw std::runtime_error("chunk too large");
+      throw std::runtime_error("invalid chunk size");
 
-    std::vector<char> buffer(chunk_size);
     co_await asio::async_read(
-        socket_, asio::buffer(buffer), asio::use_awaitable);
+        socket_, asio::buffer(buffer.data(), chunk_size), asio::use_awaitable);
 
     file.write(buffer.data(), chunk_size);
+
     if (!file)
       throw std::runtime_error("file write failed");
 
@@ -305,7 +284,7 @@ asio::awaitable<void> Session::sendHello(const HelloPacket& hello) {
     fstree::wire::write_u64(header, hello.peer_id);
     fstree::wire::write_string(header, hello.hostname);
 
-    auto header_buf         = header.str();
+    auto header_buf         = std::move(header).str();
     uint64_t header_size    = header_buf.size();
     uint64_t header_size_be = boost::endian::native_to_big(header_size);
 
@@ -314,15 +293,16 @@ asio::awaitable<void> Session::sendHello(const HelloPacket& hello) {
     //           << " peer_id=" << hello.peer_id << " hostname=" <<
     //           hello.hostname
     //           << "\n";
-    co_await asio::async_write(
-        socket_,
+
+    std::array<asio::const_buffer, 2> header_buffer{
         asio::buffer(&header_size_be, sizeof(header_size_be)),
-        asio::bind_executor(strand_, asio::use_awaitable));
+        asio::buffer(header_buf)};
 
     co_await asio::async_write(
         socket_,
-        asio::buffer(header_buf),
+        header_buffer,
         asio::bind_executor(strand_, asio::use_awaitable));
+
   } catch (...) {
     busy_.store(false);
     close();
@@ -355,14 +335,14 @@ asio::awaitable<Session::HelloPacket> Session::receiveHello() {
     // --- Header Debug ---
     // std::cerr << "receiveHello: header_size=" << header_size << "\n";
 
-    std::vector<uint8_t> buffer(header_size);
+    std::string buffer(header_size, '\0');
     co_await asio::async_read(
         socket_,
         asio::buffer(buffer),
         asio::bind_executor(strand_, asio::use_awaitable));
 
-    std::istringstream is(std::string(buffer.begin(), buffer.end()),
-                          std::ios::binary);
+    std::istringstream is(std::move(buffer), std::ios::binary);
+
     HelloPacket hello;
     hello.peer_id  = fstree::wire::read_u64(is);
     hello.hostname = fstree::wire::read_string(is);
@@ -422,11 +402,6 @@ asio::awaitable<bool> Session::receiveTreeRequest() {
 
 asio::awaitable<void> Session::sendTaggedFile(const fstree::DirectoryTree& tree,
                                               const fstree::Node& node) {
-  // Tag byte first, then the existing sendFile payload.
-  // sendFile acquires busy_ itself, so we just prepend the tag here
-  // while we own the strand exclusively via sendFile's locking.
-  // Simplest correct approach: send tag then call sendFile (both acquire busy_
-  // sequentially — safe because we are the only writer at this point).
   co_await asio::dispatch(strand_, asio::use_awaitable);
   while (busy_.exchange(true))
     co_await asio::post(strand_, asio::use_awaitable);
@@ -438,6 +413,7 @@ asio::awaitable<void> Session::sendTaggedFile(const fstree::DirectoryTree& tree,
     throw;
   }
   busy_.store(false);
+  // FIX: Another coroutine can jump here and grab busy_
   co_await sendFile(tree, node);
 }
 
@@ -449,11 +425,11 @@ asio::awaitable<void> Session::sendDeleteNotice(
   try {
     std::ostringstream os;
     fstree::wire::write_string(os, rel_path.generic_string());
-    auto buf       = os.str();
+    auto buf       = std::move(os).str();
     uint64_t sz_be = boost::endian::native_to_big(buf.size());
 
     uint8_t tag = static_cast<uint8_t>(PacketType::DeleteFile);
-    std::vector<asio::const_buffer> buffers{
+    std::array<asio::const_buffer, 3> buffers{
         asio::buffer(&tag, 1),
         asio::buffer(&sz_be, sizeof(sz_be)),
         asio::buffer(buf),
@@ -566,13 +542,13 @@ asio::awaitable<std::filesystem::path> Session::receiveRelPath() {
     if (sz > 4096)
       throw std::runtime_error("path too long");
 
-    std::vector<uint8_t> buf(sz);
+    std::string buf(sz, '\0');
     co_await asio::async_read(
         socket_,
         asio::buffer(buf),
         asio::bind_executor(strand_, asio::use_awaitable));
 
-    std::istringstream is(std::string(buf.begin(), buf.end()));
+    std::istringstream is(std::move(buf), std::ios::binary);
     auto path_str = fstree::wire::read_string(is);
 
     busy_.store(false);
@@ -673,29 +649,33 @@ void Peer::doResolveAndConnect(const std::string& host,
   resolver_.async_resolve(
       host,
       std::to_string(port),
-      [self = shared_from_this(),
+      [self       = shared_from_this(),
        on_connect = std::move(on_connect),
        on_error   = std::move(on_error)](
           boost::system::error_code ec,
           tcp::resolver::results_type results) mutable {
         if (ec) {
-          if (on_error) on_error(ec);
+          if (on_error)
+            on_error(ec);
           return;
         }
         auto socket = std::make_shared<tcp::socket>(self->io_);
-        asio::async_connect(
-            *socket, results,
-            [self, socket,
-             on_connect = std::move(on_connect),
-             on_error   = std::move(on_error)](
-                boost::system::error_code ec, auto) mutable {
-              if (ec) {
-                if (on_error) on_error(ec);
-                return;
-              }
-              auto session = self->createSession(std::move(*socket));
-              on_connect(std::weak_ptr<Session>(session));
-            });
+        asio::async_connect(*socket,
+                            results,
+                            [self,
+                             socket,
+                             on_connect = std::move(on_connect),
+                             on_error   = std::move(on_error)](
+                                boost::system::error_code ec, auto) mutable {
+                              if (ec) {
+                                if (on_error)
+                                  on_error(ec);
+                                return;
+                              }
+                              auto session =
+                                  self->createSession(std::move(*socket));
+                              on_connect(std::weak_ptr<Session>(session));
+                            });
       });
 }
 

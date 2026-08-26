@@ -63,6 +63,8 @@ struct DirectoryTree {
 
 enum class ChangeType : uint8_t { Added, Deleted, Modified };
 
+// Lightweight flat copy without child node ownership or pointers
+// Used inside NodeDiff
 struct NodeSnapshot {
   fs::path path;
   NodeType type;

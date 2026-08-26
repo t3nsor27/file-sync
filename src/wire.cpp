@@ -13,7 +13,7 @@ void write_u32(std::ostream& os, uint32_t v) {
 }
 
 void write_u64(std::ostream& os, uint64_t v) {
-  uint32_t be = boost::endian::native_to_big(v);
+  uint64_t be = boost::endian::native_to_big(v);
   os.write(reinterpret_cast<const char*>(&be), sizeof(v));
 }
 

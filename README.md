@@ -135,3 +135,4 @@ Once running, use the TUI to:
 - Make File hash compulsory
 - Since `wire.cpp` I/O primitives use big endian as default; remove manual conversion of data in `peer.cpp`
 - Abstract the main event loop inside `main.cpp`.
+- Update `wire.cpp` to take `std::string` as argument.

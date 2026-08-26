@@ -8,6 +8,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -19,6 +20,7 @@
 
 namespace asio = boost::asio;
 using namespace asio::experimental::awaitable_operators;
+
 std::pair<std::string, asio::ip::address> GetHostInfo() {
   boost::asio::io_context io;
 
@@ -64,11 +66,14 @@ PeerInfo ExtractPeerInfo(std::shared_ptr<net::Session> session,
 }
 
 // TODO: Separate sync_state for each peer
-// TODO: Implement parallel sending and receiving files
+// PERF: Implement parallel sending and receiving files
+// TODO: Refactor code in main
 int main(int argc, char* argv[]) {
   using namespace ftxui;
 
+  // TODO: port and path validation
   if (argc != 3) {
+    std::cerr << "Usage: file-sync <port> <directory_path>\n";
     return 0;
   }
 
@@ -95,8 +100,10 @@ int main(int argc, char* argv[]) {
     }
     return false;
   };
+
   uint16_t port = std::stoi(argv[1]);
   auto peer     = std::make_shared<net::Peer>(port);
+
   PeerInfo local_peer{
       hostname,
       peer->id(),
@@ -158,6 +165,7 @@ int main(int argc, char* argv[]) {
               auto hello = co_await session->receiveHello();
               auto info  = ExtractPeerInfo(session, hello);
 
+              // Checks duplicate session with the same peer
               {
                 std::lock_guard<std::mutex> lock(peer_mutex);
                 for (auto& existing : peer_list) {
@@ -409,6 +417,7 @@ int main(int argc, char* argv[]) {
                             co_await session->sendHello({peer->id(), hostname});
                             auto info = ExtractPeerInfo(session, hello);
 
+                            // Checks session belonging to the same peer
                             {
                               std::lock_guard<std::mutex> lock(peer_mutex);
                               for (auto& existing : peer_list) {

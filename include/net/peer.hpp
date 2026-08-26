@@ -1,8 +1,8 @@
 #pragma once
 
-#include <boost/endian/conversion.hpp>
 #include <atomic>
 #include <boost/asio.hpp>
+#include <boost/endian/conversion.hpp>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -18,6 +18,7 @@ namespace fs   = std::filesystem;
 constexpr uint64_t MAX_TREE_SIZE       = 64 * 1024 * 1024;  // 64MB
 constexpr uint32_t MAX_FILE_CHUNK_SIZE = 64 * 1024 * 1024;  // 64 MB
 
+// TODO: Replace busy_ with a single writer queue
 class Session : public std::enable_shared_from_this<Session> {
  public:
   struct HelloPacket {
