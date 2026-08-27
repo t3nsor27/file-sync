@@ -170,8 +170,10 @@ asio::awaitable<void> Session::sendFile(const fstree::DirectoryTree& tree,
         static_cast<uint32_t>(std::min<uint64_t>(remaining, chunk_size));
 
     file.read(file_buffer.data(), to_read);
-    if (!file)
+    if (!file) {
+      busy_.store(false);
       throw std::runtime_error("file read failed");
+    }
 
     uint32_t be_size = boost::endian::native_to_big(to_read);
 
